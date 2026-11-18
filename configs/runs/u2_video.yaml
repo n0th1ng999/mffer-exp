@@ -1,0 +1,6 @@
+# U2: video-only baseline
+# Training protocol (max_epochs 30, patience 5, monitor val_displayed_emotion_accuracy,
+# batch 16) comes from mffer.train.DEFAULTS and is identical for every configuration.
+name: u2_video
+model:
+  preset: video_only

@@ -1,0 +1,12 @@
+[project]
+name = "mffer"
+version = "0.1.0"
+description = "Experiments for federated multimodal multi-task emotion recognition on CREMA-D"
+requires-python = ">=3.12,<3.13"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["mffer*"]

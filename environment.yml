@@ -1,0 +1,26 @@
+# Works on macOS (Apple Silicon, Metal GPU) and Linux (NVIDIA GPU via CUDA). On Windows use WSL2 (Linux).
+# Exact versions used for the paper's runs on the Mac: requirements-macos-arm64.lock
+name: mffer
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12          # tensorflow-metal has no wheels for 3.13
+  - pip
+  - pip:
+      # TF 2.19 everywhere: the last release tensorflow-metal 1.2 works with
+      - tensorflow==2.19.* ; sys_platform == "darwin"
+      - tensorflow-metal==1.2.* ; sys_platform == "darwin" and platform_machine == "arm64"
+      - tensorflow[and-cuda]==2.19.* ; sys_platform == "linux"
+      - flwr[simulation]==1.43.*  # run_simulation is deprecated in later versions
+      - librosa
+      - opencv-python-headless
+      - h5py
+      - pandas
+      - scikit-learn
+      - pyyaml
+      - matplotlib
+      - tqdm
+      - jupyterlab
+      - ipykernel
+      - pytest
+      - -e .

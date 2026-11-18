@@ -1,0 +1,4 @@
+# Relative paths are resolved against the repository root.
+raw: ../data/CREMA-D          # git clone of CheyneyComputerScience/CREMA-D
+processed: ../data/processed  # clips.csv, cremad.h5, splits/
+runs: runs                    # one directory per run
