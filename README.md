@@ -45,9 +45,9 @@ The actor splits are **not** regenerated: they are versioned in `splits/` and ev
 files (`python -m mffer.data.splits` refuses to overwrite them).
 
 **What will and won't match.** Labels, masks, splits, features and seeds are identical on every machine.
-Training on a GPU is not bit-for-bit deterministic (Metal and CUDA sum in different orders), so a rerun can
-differ by a few tenths of a point per run; compare against the mean ± sd over the three splits, not single
-runs. Times per epoch depend on the hardware recorded in each run's `meta.json`. Exact package versions of
+Training runs on the CPU ([ADR 0001](docs/adr/0001-cpu-only-training.md)); multithreaded CPU kernels are
+not guaranteed to sum in the same order on every machine, so a rerun can differ by a few tenths of a point
+per run; compare against the mean ± sd over the three splits, not single runs. Times per epoch depend on the hardware recorded in each run's `meta.json`. Exact package versions of
 the paper's runs: `requirements-macos-arm64.lock`.
 
 ## Everyday commands
@@ -72,13 +72,16 @@ Paths are set once in `configs/paths.yaml` (dataset at `../data/CREMA-D`, output
 | `requirements-macos-arm64.lock` | Exact package versions of the paper's runs | done |
 | `splits/` | The three frozen actor splits (versioned; never regenerated) | done |
 | `configs/paths.yaml` | Dataset and output paths | done |
-| `configs/runs/*.yaml` | One file per configuration: C1, C2, U1, U2, D1–D4, F1 (`f1_iid`), F2 (`f2_actor`), L1 (`l1_local`) | done (F3, F4 to do) |
+| `configs/runs/*.yaml` | One file per configuration: C1, C2, U1, U2, D1–D4, F1 (`f1_iid`), F2 (`f2_actor`), F3 (`f3_actor4`), F4 (`f4_fedprox`), L1 (`l1_local`) | done |
 | `mffer/config.py` | Load paths and run configs | done |
 | `mffer/data/cremad.py` | Index CREMA-D: one row per clip with actor, sentence, labels, demographics | done (labels frozen 18 Nov) |
 | `mffer/data/splits.py` | Actor-grouped, sex-stratified train/val/test splits, saved as JSON | done |
 | `mffer/data/features.py` | MFCC and frame extraction → HDF5 | done |
 | `mffer/data/pipeline.py` | `tf.data` input pipeline from HDF5 + split ([design](docs/pipeline-design.md)) | done |
 | `tests/` | Invariant tests for splits, pipeline, metrics, reporter and FedProx: `python -m pytest -q tests` | done (24 tests) |
+| `scripts/lab_stability.py` | The lab experiment behind CPU-only training: one configuration under variants (CPU/GPU, lr, clipnorm, no BN), per-epoch curves, writes nothing to `runs/` | done |
+| `docs/adr/` | Architecture Decision Records: one file per protocol or design decision ([index](docs/adr/README.md)) | done (13 records) |
+| `pyproject.toml`, `.pre-commit-config.yaml` | Package metadata, ruff lint rules, pytest settings; commit/push hooks (see Development) | done |
 | `scripts/timing_pilot.py` | Time per training step and per batch read on real data | done |
 | `mffer/models.py` | Model builder: M1, M3 and the ladder variants from config flags | done |
 | `mffer/train.py` | Centralised training, early stopping, checkpoints, resume, test once; local-only mode (`--client k`) | done; ran end to end (C1, U1 ×3) |
@@ -164,8 +167,8 @@ neighbouring steps is attributable to that one change.
 All on the M3 model, the same test actors as C2, and equal compute: one round is one local epoch on every
 client, i.e. one pass over all training data, so 90 rounds match 90 centralised epochs. The server scores
 the global model on val after every round; test is scored once, at the val-selected round. Audio normalisation
-statistics are computed per client (raw data never leaves it); the server pools the clients' 26 summary
-numbers exactly to score the global model. Each client also compensates loss weights with its own label
+statistics are computed per client (raw data never leaves it); the server pools the clients' summary
+numbers (13 means, 13 stds, a count) exactly to score the global model. Each client also compensates loss weights with its own label
 coverage. Clients keep no state between rounds: each round starts from the global weights with a fresh
 Adam (standard FedAvg; centralised training keeps Adam's moments across epochs, so this is part of the
 "cost of federation"). The global model starts from the same initial weights as C2 (same seed). Clients
@@ -263,7 +266,7 @@ flowchart LR
     S["<b>mffer-exp</b><br/><i>Software system</i><br/>prepares data, trains and evaluates<br/>centralised, federated and local-only models"]
     C[("CREMA-D<br/><i>External dataset</i><br/>GitHub, git-lfs:<br/>7,442 clips, 91 actors, ratings")]
     P["Paper project<br/><i>External system</i><br/>../mffer-worldcist27 (LaTeX)"]
-    G["Apple M4 Pro GPU<br/><i>Infrastructure</i><br/>TensorFlow + Metal"]
+    G["Apple M4 Pro CPU<br/><i>Infrastructure</i><br/>TensorFlow, GPU hidden<br/>(ADR 0001)"]
 
     R -- "configs, CLI commands" --> S
     S -- "logs, metrics, ledger" --> R
@@ -288,6 +291,7 @@ flowchart TB
         DS[("<b>Dataset store</b><br/>../data/processed: clips.csv, cremad.h5<br/>+ splits/split_{0,1,2}.json (in repo)")]
         TRAIN["<b>Centralised trainer</b><br/>python -m mffer.train<br/>configs/runs/*.yaml"]
         FED["<b>Federated simulator</b><br/>python -m mffer.federated<br/>Flower server + clients"]
+        BASE["<b>Baselines</b><br/>python -m mffer.baselines<br/>B0, no training"]
         RUNS[("<b>Run store</b><br/>runs/&lt;run_id&gt;/<br/>config, epochs.csv,<br/>checkpoint, test.json")]
         REP["<b>Reporter</b><br/>python -m mffer.report<br/>ledger, tables, figures"]
     end
@@ -297,6 +301,7 @@ flowchart TB
     RAW --> PREP --> DS
     DS --> TRAIN --> RUNS
     DS --> FED --> RUNS
+    DS --> BASE --> RUNS
     RUNS --> REP --> PAPER
 ```
 
@@ -305,7 +310,8 @@ flowchart TB
 | Data preparation | Python, pandas, librosa, ffmpeg/OpenCV, h5py | Build the clip index and labels, extract MFCCs and 10 frames per clip, write frozen splits |
 | Dataset store | HDF5 (uint8 frames, one clip per chunk), CSV, JSON | Single source of inputs and splits for every run |
 | Centralised trainer | TensorFlow 2.19 / Keras (CPU) | Train one configuration on one split; early stopping on val; score test once. Local-only mode (L1): the same on one federated client's rows |
-| Federated simulator | Flower (`flwr`), same Keras model | FedAvg over N clients (IID or by actor); server evaluates the global model on val each round, test once |
+| Federated simulator | Flower 1.43 (`flwr`, Ray backend), same Keras model (CPU) | FedAvg (or FedProx) over N clients (IID or by actor), one client at a time; server evaluates the global model on val each round, test once ([ADR 0007](docs/adr/0007-fl-round-protocol.md)) |
+| Baselines | numpy, same metric code | B0: majority class / train mean per head, written as normal run directories |
 | Run store | Files | Everything needed to trace a number: config, split, seed, git hash, hardware, per-epoch CSV, test metrics |
 | Reporter | pandas, matplotlib | Results ledger and the paper's tables/figures, generated only from the run store |
 
@@ -323,7 +329,8 @@ flowchart LR
     MD["models<br/>build_model(flags):<br/>branches, gating,<br/>fusion, 5 heads, losses"]
     MT["metrics<br/>acc, macro-F1, MAE,<br/>baselines, per-sex"]
     TR["train<br/>fit, early stop,<br/>checkpoint, test once,<br/>local-only mode"]
-    FD["federated<br/>Flower client, FedAvg,<br/>server eval"]
+    FD["federated<br/>Flower client, FedAvg,<br/>FedProx, server eval"]
+    BL["baselines<br/>B0 majority /<br/>train mean"]
     RP["report<br/>ledger, tables, figures"]
 
     CR --> FE
@@ -333,7 +340,9 @@ flowchart LR
     CFG --> TR & FD & PL & MD
     PL --> TR & FD
     MD --> TR & FD
-    MT --> TR & FD & RP
+    MT --> TR & FD & RP & BL
+    SP --> TR & FD & BL
+    TR -- "score_test" --> FD
 ```
 
 | Component | Owns (invariant it guarantees) |
@@ -341,18 +350,37 @@ flowchart LR
 | `config` | One place for paths; a run is fully described by its YAML file |
 | `data.cremad` | The definition of every label (displayed/perceived emotion, valence, intensities); one row per usable clip |
 | `data.features` | Identical preprocessing for every run; frames stored as uint8, normalised only at read time |
-| `data.splits` | No actor in more than one of train/val/test; splits are files, created once, never regenerated |
-| `data.pipeline` | Normalisation statistics come from the train split only; missing-label masking (e.g. intensity on IEO only) |
+| `data.splits` | No actor in more than one of train/val/test; splits are files, created once, never regenerated; `client_rows` is the single definition of a client's data (L1 = F2 rows) |
+| `data.pipeline` | Normalisation statistics come from the training rows only (per client in FL, pooled exactly for the server); missing-label masking (e.g. intensity on IEO only) |
 | `models` | All configurations (M1, ladder steps, M3) come from one builder, so they differ only by declared flags |
 | `train` | Same budget and stopping rule for every configuration; test is touched exactly once |
-| `federated` | Same model and stopping rule as centralised; the global model is scored on the same test actors |
+| `federated` | Same model, initial weights and stopping rule as centralised; the global model is scored on the same test actors; a round with a failed client or a visible GPU fails the run |
+| `baselines` | B0 reads no inputs, only training labels; scored by the same metric code as the models |
 | `metrics` | Same metric code for all modes, including the baselines |
-| `report` | Paper numbers come only from run directories |
+| `report` | Paper numbers come only from counted run directories (latest finished CPU run per configuration and split) |
+
+Why the architecture and protocol are the way they are: [Architecture Decision Records](docs/adr/README.md).
 
 ### Level 4 — Code
 
 Not drawn: the code is small enough to read. Entry points are the `main()` functions of the modules
 above; the model graph is in `mffer/models.py` (`build_model`), and its M3 form matches Fig. 2 of the paper.
+
+## Development
+
+```bash
+brew install pre-commit                                     # once per machine; kept out of the mffer env (ADR 0013)
+pre-commit install --hook-type pre-commit --hook-type pre-push
+ruff check .                                                # lint (also runs on every commit)
+conda run -n mffer python -m pytest -q                      # invariant tests (also run on every push, ~25 s)
+```
+
+- **Commits:** [Conventional Commits](https://www.conventionalcommits.org) (`feat(federated): …`,
+  `fix(metrics): …`, `docs(adr): …`). Commit **before** launching a run: its `meta.json` records
+  `git describe --dirty`, and a `-dirty` version cannot be rebuilt.
+- **Architecture changes** update this README (layout table, C4 diagrams, protocol) and add or supersede an
+  ADR in the same commit.
+- **Tags** mark the code behind the paper: `worldcist27-submission`, `worldcist27-camera-ready`.
 
 ## Conventions
 
