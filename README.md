@@ -35,11 +35,46 @@ git -C CREMA-D checkout 1658cd342dff90010aa843eaeebd53610a08b1dc   # the version
 cd ../mffer-exp
 conda env create -f environment.yml        # macOS: TF 2.19 + Metal; Linux: TF 2.19 + CUDA; Windows: use WSL2
 conda activate mffer
-python scripts/smoke_test.py               # GPU visible, M1/M3 train a few steps, Flower runs 2 rounds
+python scripts/smoke_test.py               # training device, M1/M3 train a few steps, Flower runs 2 rounds
 python -m mffer.data.cremad --summary      # checks the CREMA-D commit, builds clips.csv
 python -m mffer.data.features              # MFCCs + 10 frames per clip -> cremad.h5 (~1–30 min, ~11 GB)
 python -m pytest -q tests                  # invariants: splits, masks, normalisation, metrics
 ```
+
+### Linux or Windows (WSL2) with an NVIDIA GPU
+
+Everything above applies; these steps come first. On Windows all of it runs inside WSL2 (Ubuntu), never in
+PowerShell. Not yet tried on such a machine: the first run there is the check at the end of this section.
+
+```bash
+# Windows only, in an admin PowerShell: install WSL2 + Ubuntu, then reboot and open "Ubuntu"
+wsl --install -d Ubuntu
+```
+
+1. **NVIDIA driver:** the normal Windows (or Linux) driver for the card. Inside WSL2 install **no** driver and
+   no CUDA toolkit: `tensorflow[and-cuda]` in `environment.yml` brings its own CUDA libraries. `nvidia-smi`
+   inside Ubuntu must list the card.
+2. **Tools:** `sudo apt update && sudo apt install -y git git-lfs ffmpeg`, and Miniforge for conda
+   (`curl -LO https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh &&
+   bash Miniforge3-Linux-x86_64.sh`). For commits: `pipx install pre-commit` (see Development).
+3. **Where the data lives:** clone into the Linux home (`~/mffer/...`), not `/mnt/c/...`; reading the 11 GB
+   HDF5 across the Windows boundary is many times slower. Either rebuild the features with the commands above
+   or copy `../data/processed` (`clips.csv`, `cremad.h5`) from another machine.
+4. **Check:** `python scripts/smoke_test.py` must print `training device: cuda ['NVIDIA GeForce RTX ...']`.
+   On Linux, `requirements-macos-arm64.lock` does not apply; conda resolves `environment.yml` (TF 2.19.x,
+   Flower 1.43.x) and each run records the exact TensorFlow version in `meta.json`.
+
+**First job on a CUDA machine (before any paper run):** check that CUDA trains like the CPU, the way the
+Metal problem was found (ADR 0015). Same seed, same 12 epochs, nothing written to `runs/`:
+
+```bash
+python scripts/lab_stability.py --preset audio_only --split 0 --epochs 12 --cpu --label cpu
+python scripts/lab_stability.py --preset audio_only --split 0 --epochs 12 --label cuda
+```
+
+The two curves should stay within about a point of each other and the loss must keep falling. If CUDA
+diverges like Metal did, train there with `MFFER_CPU=1` (every command; the reporter accepts CPU runs from
+any machine). Record the outcome in ADR 0015.
 
 The actor splits are **not** regenerated: they are versioned in `splits/` and every machine uses the same
 files (`python -m mffer.data.splits` refuses to overwrite them).
@@ -66,7 +101,7 @@ Paths are set once in `configs/paths.yaml` (dataset at `../data/CREMA-D`, output
 
 | Path | What | Status |
 |---|---|---|
-| `scripts/render_results.py` | `results.html`: scores per experiment (mean ± sd) and per run; click a run for interactive learning curves (hover, drag to zoom, expand, log scale), confusion matrices, per-class and per-sex scores, every epoch. Run by `./run` after each run | done |
+| `scripts/render_results.py` | `results.html`: scores per experiment (mean ± sd) and per run; click a run for interactive learning curves (hover, drag to zoom, expand, log scale), confusion matrices, per-class and per-sex scores, every epoch. Metrics in priority order; which runs count comes from `mffer.report`, so the page and the paper tables agree. Run by `./run` after each run | done |
 | `run` | One command per experiment: `./run c1`, `./run c2 0`, `./run resume …` (see How to run) | done |
 | `environment.yml` | Conda environment (macOS Metal / Linux CUDA) | done |
 | `requirements-macos-arm64.lock` | Exact package versions of the paper's runs | done |
@@ -80,7 +115,7 @@ Paths are set once in `configs/paths.yaml` (dataset at `../data/CREMA-D`, output
 | `mffer/data/pipeline.py` | `tf.data` input pipeline from HDF5 + split ([design](docs/pipeline-design.md)) | done |
 | `tests/` | Invariant tests for splits, pipeline, metrics, reporter and FedProx: `python -m pytest -q tests` | done (24 tests) |
 | `scripts/lab_stability.py` | The lab experiment behind CPU-only training: one configuration under variants (CPU/GPU, lr, clipnorm, no BN), per-epoch curves, writes nothing to `runs/` | done |
-| `docs/adr/` | Architecture Decision Records: one file per protocol or design decision ([index](docs/adr/README.md)) | done (13 records) |
+| `docs/adr/` | Architecture Decision Records: one file per protocol or design decision ([index](docs/adr/README.md)) | done (15 records) |
 | `pyproject.toml`, `.pre-commit-config.yaml` | Package metadata, ruff lint rules, pytest settings; commit/push hooks (see Development) | done |
 | `scripts/timing_pilot.py` | Time per training step and per batch read on real data | done |
 | `mffer/models.py` | Model builder: M1, M3 and the ladder variants from config flags | done |
@@ -89,7 +124,8 @@ Paths are set once in `configs/paths.yaml` (dataset at `../data/CREMA-D`, output
 | `mffer/metrics.py` | Accuracy, macro-F1, MAE, per-sex breakdown, IEO intensity-ordering check, from `predictions.csv` | done |
 | `mffer/baselines.py` | B0: majority class / train mean per head, written as normal run directories | done 19 Nov |
 | `mffer/report.py` | Results ledger, paper tables (`generated/tab-*.tex`) and learning-curve figure, from run directories only | done 19 Nov |
-| `scripts/smoke_test.py` | Environment check on random tensors | done |
+| `scripts/smoke_test.py` | Environment check on random tensors: training device, M1/M3 steps, Flower | done |
+| `mffer/device.py` | Training-device policy: CPU on macOS (Metal hidden), CUDA on Linux/WSL2, `MFFER_CPU=1` forces the CPU | done 19 Nov; CUDA path untested |
 | `notebooks/eda.ipynb` | Exploratory analysis of CREMA-D: labels, masks, splits, baselines (kernel *Python (mffer)*) | done |
 | `TODO.md`, `todo.html` | Task list (source) and its browser view; refresh with `python3 scripts/render_todo.py` | done |
 | `runs/` | One directory per run (git-ignored) | — |
@@ -108,10 +144,11 @@ same split**, once, at the epoch (or round) chosen on validation. "×3" means th
 | Outputs (5 heads) | Displayed emotion (6, softmax), perceived emotion (6, softmax), displayed valence (3, softmax), displayed intensity (sigmoid, MSE, IEO clips only), perceived intensity (sigmoid, MSE) |
 | Loss weights | 1.0 for the three classification heads, 0.2 for each intensity head; masked heads divided by label coverage |
 | Optimiser | Adam, learning rate 1e-4, batch 16, float32 |
-| Device | **CPU only.** On the Metal GPU (tensorflow-metal 1.2.0, TF 2.18 and 2.19) the same code, data and seed diverge after 3–4 epochs; on the CPU they train cleanly (`scripts/lab_stability.py`). `mffer.train` hides the GPU; `meta.json` records `"gpu": []` |
-| Budget | At most 90 epochs (or rounds; raised from 30 on 18 Nov, when best epochs landed at 25–29); early stopping with patience 5 on val displayed-emotion accuracy |
+| Device | **CPU on macOS, CUDA on an NVIDIA GPU** (`mffer/device.py`, [ADR 0015](docs/adr/0015-cuda-allowed-metal-not.md)). On the Metal GPU (tensorflow-metal 1.2.0, TF 2.18 and 2.19) the same code, data and seed diverge after 3–4 epochs while the CPU trains cleanly (`scripts/lab_stability.py`), so Metal is always hidden and its runs never count. `MFFER_CPU=1` forces the CPU anywhere. `meta.json` records `device` (cpu / cuda) and the GPU model; a run is resumed only on the device it started on, and every federated client must train on the run's device |
+| Primary metric | **Valence macro-F1**, then displayed-intensity MAE, then perceived-intensity MAE ([ADR 0014](docs/adr/0014-primary-metric-valence-f1.md)). Macro, because always answering "negative" already scores 68% valence accuracy (macro-F1 0.27). Tables and pages list metrics in this order |
+| Budget | At most 90 epochs (or rounds; raised from 30 on 18 Nov, when best epochs landed at 25–29); early stopping with patience 5 on **val valence macro-F1** (until 19 Nov: val displayed-emotion accuracy; runs selected that way are `invalid (old monitor)`) |
 | Seed | Weight-initialisation seed = split id (overridable with `--seed`) |
-| Metrics | Accuracy and macro-F1 per classification head; MAE per intensity head against the constant predictor; accuracy by sex; IEO ordering check (perceived intensity rises LO → MD → HI); parameters, minutes per epoch, FL update size (parameters × 4 bytes) |
+| Metrics | Macro-F1 and accuracy per classification head; MAE per intensity head against the constant predictor; macro-F1 and accuracy by sex; IEO ordering check (perceived intensity rises LO → MD → HI); parameters, minutes per epoch, FL update size (parameters × 4 bytes) |
 | Output | One run directory `runs/<config>-s<split>-<yyyymmdd-hhmm>/`: config, split, seed, git hash, hardware, `epochs.csv`, checkpoints, test predictions and metrics |
 
 ### Model building blocks
@@ -138,7 +175,7 @@ configurations differ only by the flags they declare.
 
 | ID | Experiment | Detail | Splits |
 |---|---|---|---|
-| **B0** | Majority class and constant predictor | No training, no inputs (not a learned model such as k-NN). For each classification head, predict the most frequent train-split class; for each intensity head, predict the train-split mean. Sets the floor every model must beat (e.g. split 0 test: displayed emotion 17.1%, perceived 26.3%, valence 68.3%, perceived-intensity MAE 0.090). The perceived-intensity head is kept in the paper only if models beat its constant predictor | ×3 |
+| **B0** | Majority class and constant predictor | No training, no inputs (not a learned model such as k-NN). For each classification head, predict the most frequent train-split class; for each intensity head, predict the train-split mean. Sets the floor every model must beat (e.g. split 0 test: valence macro-F1 27.1% at 68.3% accuracy, displayed-intensity MAE 0.222, perceived-intensity MAE 0.090, displayed emotion 17.1%). The perceived-intensity head is kept in the paper only if models beat its constant predictor | ×3 |
 | **U1** | Audio-only | Audio encoder → shared trunk → heads (preset `audio_only`). How far the voice alone goes; cheap, since no video is read | ×3 |
 | **U2** | Video-only | Simple visual encoder → shared trunk → heads (preset `video_only`). How far the face alone goes | ×3 |
 
@@ -241,9 +278,9 @@ Updated by hand as runs land; the full task list with dates is `TODO.md`.
 | ID | Code | Config | Runs done | Notes |
 |---|---|---|---|---|
 | B0 | ready (`mffer.baselines`, 19 Nov) | — | 3 / 3 | `runs/b0_majority-s{0,1,2}-20261119-*`: displayed 17.1%, perceived 26.9% ± 0.6, valence 68.3%, perceived-intensity MAE 0.088 ± 0.002, displayed-intensity MAE 0.222 |
-| U1 | ready (`mffer.train`) | `u1_audio.yaml` | 3 / 3 | CPU, 90-epoch limit, 18 Nov (`runs/u1_audio-s{0,1,2}-20261118-{2016,2016,2017}`): test displayed acc 52.5% ± 0.5, perceived 52.7%, valence 72.8%, perceived-intensity MAE 0.083. Stopped by patience at epochs 30, 43, 33. 30-epoch and GPU runs superseded |
+| U1 | ready (`mffer.train`) | `u1_audio.yaml` | 0 / 3 | **Rerun needed**: epochs were picked on displayed-emotion accuracy (ADR 0014). Previous: CPU, 90-epoch limit, 18 Nov (`runs/u1_audio-s{0,1,2}-20261118-{2016,2016,2017}`): valence macro-F1 56.5% ± 0.6, test displayed acc 52.5% ± 0.5, perceived 52.7%, valence acc 72.8%, perceived-intensity MAE 0.083. Stopped by patience at epochs 30, 43, 33. 30-epoch and GPU runs superseded |
 | U2 | ready | `u2_video.yaml` | 0 / 3 | |
-| C1 | ready | `c1_m1.yaml` | 3 / 3 | CPU, 18 Nov (`runs/c1_m1-s{0,1,2}-20261118-{1901,1924,1946}`, 15–22 min each): test displayed acc 51.5% ± 1.8, perceived 51.6%, valence 72.1%, MAE 0.084. ≈ U1: the simple visual encoder adds nothing. Older GPU run is invalid |
+| C1 | ready | `c1_m1.yaml` | 0 / 3 | **Rerun needed** (ADR 0014). Previous: CPU, 18 Nov (`runs/c1_m1-s{0,1,2}-20261118-{1901,1924,1946}`, 15–22 min each): valence macro-F1 53.9% ± 3.7, test displayed acc 51.5% ± 1.8, perceived 51.6%, valence acc 72.1%, MAE 0.084. ≈ U1: the simple visual encoder adds nothing. Older GPU run is invalid |
 | C2 | ready | `c2_m3.yaml` | 0 / 3 | |
 | D1–D4 | ready | `d1.yaml` … `d4.yaml` | 0 / 1 each | |
 | F1, F2 | ready (`mffer.federated`, 19 Nov) | `f1_iid.yaml`, `f2_actor.yaml` | 0 / 3 each | Checked end to end on real data with small models (audio-only: 3 rounds, resume, injected client crash fails the run; early stop at round 6 then re-score on resume; M1: 2 rounds ≈ 55 s/round vs 48 s/epoch centralised) |
@@ -266,7 +303,7 @@ flowchart LR
     S["<b>mffer-exp</b><br/><i>Software system</i><br/>prepares data, trains and evaluates<br/>centralised, federated and local-only models"]
     C[("CREMA-D<br/><i>External dataset</i><br/>GitHub, git-lfs:<br/>7,442 clips, 91 actors, ratings")]
     P["Paper project<br/><i>External system</i><br/>../mffer-worldcist27 (LaTeX)"]
-    G["Apple M4 Pro CPU<br/><i>Infrastructure</i><br/>TensorFlow, GPU hidden<br/>(ADR 0001)"]
+    G["CPU (macOS, Metal hidden)<br/>or NVIDIA GPU (CUDA)<br/><i>Infrastructure</i><br/>TensorFlow (ADR 0015)"]
 
     R -- "configs, CLI commands" --> S
     S -- "logs, metrics, ledger" --> R
@@ -309,8 +346,8 @@ flowchart TB
 |---|---|---|
 | Data preparation | Python, pandas, librosa, ffmpeg/OpenCV, h5py | Build the clip index and labels, extract MFCCs and 10 frames per clip, write frozen splits |
 | Dataset store | HDF5 (uint8 frames, one clip per chunk), CSV, JSON | Single source of inputs and splits for every run |
-| Centralised trainer | TensorFlow 2.19 / Keras (CPU) | Train one configuration on one split; early stopping on val; score test once. Local-only mode (L1): the same on one federated client's rows |
-| Federated simulator | Flower 1.43 (`flwr`, Ray backend), same Keras model (CPU) | FedAvg (or FedProx) over N clients (IID or by actor), one client at a time; server evaluates the global model on val each round, test once ([ADR 0007](docs/adr/0007-fl-round-protocol.md)) |
+| Centralised trainer | TensorFlow 2.19 / Keras (CPU or CUDA) | Train one configuration on one split; early stopping on val; score test once. Local-only mode (L1): the same on one federated client's rows |
+| Federated simulator | Flower 1.43 (`flwr`, Ray backend), same Keras model (CPU or CUDA) | FedAvg (or FedProx) over N clients (IID or by actor), one client at a time; server evaluates the global model on val each round, test once ([ADR 0007](docs/adr/0007-fl-round-protocol.md)) |
 | Baselines | numpy, same metric code | B0: majority class / train mean per head, written as normal run directories |
 | Run store | Files | Everything needed to trace a number: config, split, seed, git hash, hardware, per-epoch CSV, test metrics |
 | Reporter | pandas, matplotlib | Results ledger and the paper's tables/figures, generated only from the run store |
@@ -354,7 +391,7 @@ flowchart LR
 | `data.pipeline` | Normalisation statistics come from the training rows only (per client in FL, pooled exactly for the server); missing-label masking (e.g. intensity on IEO only) |
 | `models` | All configurations (M1, ladder steps, M3) come from one builder, so they differ only by declared flags |
 | `train` | Same budget and stopping rule for every configuration; test is touched exactly once |
-| `federated` | Same model, initial weights and stopping rule as centralised; the global model is scored on the same test actors; a round with a failed client or a visible GPU fails the run |
+| `federated` | Same model, initial weights and stopping rule as centralised; the global model is scored on the same test actors; a round with a failed client, or a client on another device, fails the run |
 | `baselines` | B0 reads no inputs, only training labels; scored by the same metric code as the models |
 | `metrics` | Same metric code for all modes, including the baselines |
 | `report` | Paper numbers come only from counted run directories (latest finished CPU run per configuration and split) |
@@ -369,7 +406,7 @@ above; the model graph is in `mffer/models.py` (`build_model`), and its M3 form 
 ## Development
 
 ```bash
-brew install pre-commit                                     # once per machine; kept out of the mffer env (ADR 0013)
+brew install pre-commit                                     # once per machine (Linux/WSL2: pipx install pre-commit); kept out of the mffer env (ADR 0013)
 pre-commit install --hook-type pre-commit --hook-type pre-push
 ruff check .                                                # lint (also runs on every commit)
 conda run -n mffer python -m pytest -q                      # invariant tests (also run on every push, ~25 s)

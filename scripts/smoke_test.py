@@ -1,6 +1,6 @@
 """Environment check on random tensors (no dataset needed).
 
-1. TensorFlow sees the Metal GPU.
+1. Reports the training device (mffer.device: CPU on macOS, CUDA on Linux with an NVIDIA GPU).
 2. M1 and M3 train for a few steps without NaNs; seconds per step give a first timing estimate.
 3. A Flower simulation runs 2 FedAvg rounds with 2 clients.
 """
@@ -11,6 +11,7 @@ import time
 import numpy as np
 import tensorflow as tf
 
+from mffer import device
 from mffer.models import AUDIO_SHAPE, DEMO_DIM, HEADS, PRESETS, TEXT_DIM, VIDEO_SHAPE, build_model
 
 BATCH = 16
@@ -91,9 +92,8 @@ def main() -> None:
     parser.add_argument("--skip-flower", action="store_true")
     args = parser.parse_args()
 
-    gpus = tf.config.list_physical_devices("GPU")
-    assert gpus, "no GPU visible: check tensorflow-metal"
-    print(f"GPU: {gpus}")
+    print(f"GPUs found: {tf.config.list_physical_devices('GPU')}")
+    print(f"training device: {device.configure()} {device.names()}")   # cuda expected on an NVIDIA machine
     for preset in ("m1", "m3"):
         check_training(preset, args.steps)
     if not args.skip_flower:

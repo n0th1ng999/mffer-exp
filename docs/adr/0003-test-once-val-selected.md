@@ -1,6 +1,7 @@
 # 0003. Early stopping on val; test scored once with the best weights
 
-- **Status:** Accepted, 18 Nov 2026
+- **Status:** Accepted, 18 Nov 2026. Selection metric superseded by [0014](0014-primary-metric-valence-f1.md)
+  (now val valence macro-F1); the test-once rule stands
 - **Where:** `mffer/train.py` (`EpochCheckpoint`, `score_test`), `mffer/federated.py` (`RoundLog`)
 
 ## Context

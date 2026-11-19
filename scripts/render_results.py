@@ -1,7 +1,9 @@
 """Render the scores of every run in runs/ into results.html (self-contained; open it in a browser).
 
-The run directories are the only source. `./run` calls this after every run; by hand:
-`python3 scripts/render_results.py`. Standard library only.
+The run directories are the only source. `./run` calls this after every run; by hand (mffer env):
+`conda run -n mffer python scripts/render_results.py`. Which runs count comes from `mffer.report.load_runs`,
+so this page and the paper tables always agree (latest finished CPU run per config and split, selected on
+the current monitor).
 
 The page: a summary per experiment (mean ± sd over splits), a list of runs, and for the selected run its
 test scores, learning curves (hover, drag to zoom, expand, log scale), confusion matrices, per-class and
@@ -15,6 +17,8 @@ import statistics
 from datetime import datetime
 from pathlib import Path
 
+from mffer.report import load_runs as report_runs
+
 ROOT = Path(__file__).resolve().parent.parent
 RUN_DIR = re.compile(r"^(?P<config>.+)-s(?P<split>\d)-(?P<stamp>\d{8}-\d{4})$")
 EXPERIMENTS = {  # config name -> (README ID, description), in README order (B0 has its own row)
@@ -27,24 +31,24 @@ EXPERIMENTS = {  # config name -> (README ID, description), in README order (B0 
     "l1_local_c0": ("L1", "Local-only, client 0"), "l1_local_c1": ("L1", "Local-only, client 1"),
 }
 B0_CONFIG = "b0_majority"   # python -m mffer.baselines; its mean over splits is the "≤ B0" reference
-BASELINE: dict[str, float] = {}
+BASELINE: dict[str, float] = {}   # "<head>.<metric>" -> B0 mean over splits
 CLASSES = {  # fixed order, as in mffer/data/cremad.py
     "displayed_emotion": ["ANG", "DIS", "FEA", "HAP", "NEU", "SAD"],
     "perceived_emotion": ["ANG", "DIS", "FEA", "HAP", "NEU", "SAD"],
     "displayed_valence": ["negative", "neutral", "positive"],
 }
-# (label, head, metric, higher is better)
+# (label, head, metric, higher is better), in the paper's priority order (metrics.PRIORITY, ADR 0014)
 COLUMNS = [
-    ("Displayed emotion acc", "displayed_emotion", "accuracy", True),
-    ("Displayed emotion F1", "displayed_emotion", "macro_f1", True),
-    ("Perceived emotion acc", "perceived_emotion", "accuracy", True),
-    ("Perceived emotion F1", "perceived_emotion", "macro_f1", True),
-    ("Valence acc", "displayed_valence", "accuracy", True),
-    ("Valence F1", "displayed_valence", "macro_f1", True),
-    ("Perceived intensity MAE", "perceived_intensity", "mae", False),
+    ("Valence F1 (primary)", "displayed_valence", "macro_f1", True),
     ("Displayed intensity MAE", "displayed_intensity", "mae", False),
+    ("Perceived intensity MAE", "perceived_intensity", "mae", False),
+    ("Valence acc", "displayed_valence", "accuracy", True),
+    ("Displayed emotion F1", "displayed_emotion", "macro_f1", True),
+    ("Displayed emotion acc", "displayed_emotion", "accuracy", True),
+    ("Perceived emotion F1", "perceived_emotion", "macro_f1", True),
+    ("Perceived emotion acc", "perceived_emotion", "accuracy", True),
 ]
-RUN_COLUMNS = [COLUMNS[i] for i in (0, 2, 4, 6)]   # runs list: the headline scores only
+RUN_COLUMNS = COLUMNS[:4]   # runs list: the prioritised scores only
 
 
 def confusion(path: Path) -> dict:
@@ -99,14 +103,11 @@ def load_runs() -> list[dict]:
             run["test"], run["best_epoch"] = result["test"], result.get("best_epoch")
             run["confusion"] = confusion(path / "predictions.csv")
         runs.append(run)
-    # Per (config, split), the latest finished run counts; earlier finished ones are superseded.
-    latest = {}
+    table = report_runs(ROOT / "runs")
+    status = dict(zip(table.run, table.status, strict=True)) if len(table) else {}
     for run in runs:
-        if run["test"] is not None:
-            latest[(run["config"], run["split"])] = run["dir"]   # sorted by name, so the last is latest
-    for run in runs:
-        run["status"] = ("incomplete" if run["test"] is None else
-                         "counted" if latest[(run["config"], run["split"])] == run["dir"] else "superseded")
+        run["status"] = status.get(run["dir"], "incomplete")
+        run["state"] = run["status"].split()[0]   # CSS class: counted, superseded, incomplete, invalid
         run["warning"] = loss_warning(run)
     return runs
 
@@ -130,8 +131,7 @@ def loss_warning(run: dict) -> str:
 
 def summary_table(runs: list[dict]) -> str:
     head = "".join(f"<th>{html.escape(c[0])}</th>" for c in COLUMNS)
-    base = "".join(f"<td>{fmt(BASELINE.get(h) if m != 'macro_f1' else None, m == 'mae')}</td>"
-                   for _, h, m, _ in COLUMNS)
+    base = "".join(f"<td>{fmt(BASELINE.get(f'{h}.{m}'), m == 'mae')}</td>" for _, h, m, _ in COLUMNS)
     n_b0 = sum(r["config"] == B0_CONFIG and r["status"] == "counted" for r in runs)
     rows = [f'<tr class="baseline"><td>B0</td><td>Majority class / constant <span class="sd">(mean over splits)'
             f"</span></td><td>{n_b0} / 3</td>{base}</tr>"]
@@ -150,8 +150,8 @@ def summary_table(runs: list[dict]) -> str:
             mean = statistics.mean(values)
             sd = f' <span class="sd">± {fmt(statistics.stdev(values), m == "mae")}</span>' if len(values) > 1 else ""
             flag = ""
-            if BASELINE.get(h) is not None and m != "macro_f1" and not (
-                    mean > BASELINE[h] if higher else mean < BASELINE[h]):
+            b0 = BASELINE.get(f"{h}.{m}")
+            if b0 is not None and not (mean > b0 if higher else mean < b0):
                 flag = ' <span class="flag" title="not better than the B0 baseline">≤ B0</span>'
             cells.append(f"<td>{fmt(mean, m == 'mae')}{sd}{flag}</td>")
         splits = ", ".join(str(r["split"]) for r in sorted(counted, key=lambda r: r["split"]))
@@ -170,10 +170,10 @@ def runs_table(runs: list[dict]) -> str:
         cells = "".join(f"<td>{fmt(metric(run, h, m), m == 'mae')}</td>" for _, h, m, _ in RUN_COLUMNS)
         warning = f'<span class="flag">⚠ {html.escape(run["warning"])}</span>' if run["warning"] else ""
         rows.append(
-            f'<tr class="run {run["status"]}" data-run="{html.escape(run["dir"])}" tabindex="0">'
+            f'<tr class="run {run["state"]}" data-run="{html.escape(run["dir"])}" tabindex="0">'
             f'<td>{run["id"]}</td><td>{run["split"]}</td>'
             f'<td><code>{html.escape(run["dir"])}</code></td>'
-            f'<td><span class="badge {run["status"]}">{run["status"]}</span> {warning}</td>'
+            f'<td><span class="badge {run["state"]}">{run["status"]}</span> {warning}</td>'
             f'<td>{run["best_epoch"] or "–"} / {epochs}</td>'
             f'<td>{f"{minutes:.0f}" if minutes is not None else "–"}</td>{cells}</tr>')
     return (f"<table class='runs'><thead><tr><th>ID</th><th>Split</th><th>Run</th><th>Status</th>"
@@ -213,7 +213,7 @@ table.runs tr.run { cursor: pointer; }
 table.runs tr.run:hover td { background: var(--raised); }
 table.runs tr.run.selected td { background: var(--select); }
 table.runs tr.run:focus-visible { outline: 2px solid var(--train); outline-offset: -2px; }
-table.runs tr.superseded td, table.runs tr.incomplete td { color: var(--text-3); }
+table.runs tr.superseded td, table.runs tr.incomplete td, table.runs tr.invalid td { color: var(--text-3); }
 table.runs td:nth-child(4) { text-align: left; }
 .sd { color: var(--text-2); font-size: 12px; }
 .flag { color: var(--flag); font-size: 12px; font-weight: 600; }
@@ -284,7 +284,7 @@ table.epochs td.bestrow { font-weight: 650; background: var(--select); }
 <body><main>
 <h1>Training scores</h1>
 <p class="note">From <code>runs/</code>, updated __UPDATED__. Every test score is measured once, at the epoch with the
-best validation displayed-emotion accuracy. <b>Train</b> = the actors the model learns from; <b>val</b> = held-out
+best validation valence macro-F1 (the primary metric). <b>Train</b> = the actors the model learns from; <b>val</b> = held-out
 actors used only to pick that epoch; <b>test</b> = other held-out actors, scored at the end.</p>
 
 <h2>By experiment</h2>
@@ -294,7 +294,8 @@ better than predicting the majority class / a constant.</p>
 
 <h2>Runs</h2>
 <p class="note">Newest first. <b>Click a run</b> (or Tab to it and press Enter) for its learning curves and full test
-breakdown. Superseded and incomplete runs are greyed out and not counted above.</p>
+breakdown. Superseded, incomplete and invalid runs (GPU, or epoch picked by an old monitor) are greyed out
+and not counted above.</p>
 <div class="scroll">__RUNS__</div>
 
 <section id="detail" aria-live="polite"><p class="empty-note">Select a run above.</p></section>
@@ -316,11 +317,12 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", 
 // Learning-curve charts: one measure each, train vs val on one axis.
 const CHARTS = [
   {key: "loss", title: "Total loss", what: "lower is better", fmt: v => v == null ? "–" : v >= 10 ? v.toFixed(1) : v.toFixed(2), loss: true, wide: true},
-  {key: "displayed_emotion_accuracy", title: "Displayed emotion accuracy", what: "higher is better; picks the best epoch", fmt: pct},
-  {key: "perceived_emotion_accuracy", title: "Perceived emotion accuracy", what: "higher is better", fmt: pct},
-  {key: "displayed_valence_accuracy", title: "Displayed valence accuracy", what: "higher is better", fmt: pct},
-  {key: "perceived_intensity_mae", title: "Perceived intensity MAE", what: "lower is better", fmt: v => num(v)},
+  {key: "displayed_valence_macro_f1", title: "Valence macro-F1 (primary)", what: "higher is better; picks the best epoch", fmt: pct},
   {key: "displayed_intensity_mae", title: "Displayed intensity MAE", what: "lower is better (IEO clips only)", fmt: v => num(v)},
+  {key: "perceived_intensity_mae", title: "Perceived intensity MAE", what: "lower is better", fmt: v => num(v)},
+  {key: "displayed_valence_accuracy", title: "Valence accuracy", what: "higher is better", fmt: pct},
+  {key: "displayed_emotion_macro_f1", title: "Displayed emotion macro-F1", what: "higher is better", fmt: pct},
+  {key: "perceived_emotion_macro_f1", title: "Perceived emotion macro-F1", what: "higher is better", fmt: pct},
 ];
 const LOSS_CHARTS = Object.keys(HEADS).map(h => ({key: h + "_loss", title: HEADS[h] + " loss",
   what: h.endsWith("intensity") ? "MSE" : "cross-entropy", fmt: v => num(v, 3), loss: true}));
@@ -476,11 +478,11 @@ function tile(label, value, sub, delta) {
     (delta ? `<div class="sub delta ${delta.cls}">${delta.text}</div>` : "") + `<div class="sub">${sub}</div></div>`;
 }
 
-function deltaVsBaseline(head, value, mae) {
-  const b = DATA.baseline[head]; if (b == null || value == null) return null;
+function deltaVsBaseline(key, value, mae) {
+  const b = DATA.baseline[key]; if (b == null || value == null) return null;
   if (mae) { const d = b - value; return {cls: d > 0 ? "up" : "down", text: `${d > 0 ? "better" : "worse"} than constant (${num(b)}) by ${num(Math.abs(d))}`}; }
   const d = 100 * (value - b);
-  return {cls: d > 0 ? "up" : "down", text: `${d > 0 ? "+" : "−"}${Math.abs(d).toFixed(1)} pts vs majority (${pct(b)}, split 0)`};
+  return {cls: d > 0 ? "up" : "down", text: `${d > 0 ? "+" : "−"}${Math.abs(d).toFixed(1)} pts vs majority (${pct(b)})`};
 }
 
 function confusionTable(head, cm) {
@@ -511,8 +513,8 @@ function render(dir) {
   state.run = run; state.hover = null;
   const n = (run.epochs.loss || []).length; state.from = 1; state.to = Math.max(n, 1);
   const t = run.test || {}, meta = run.meta || {};
-  const stopped = run.best_epoch && n ? (n < 30 ? `stopped early after ${n - run.best_epoch} epochs without improvement` : "ran the full 30 epochs") : "";
-  let h = `<div class="head"><h2>${run.id} · split ${run.split}</h2><span class="badge ${run.status}">${run.status}</span>
+  const stopped = run.best_epoch && n ? (n < 90 ? `stopped early after ${n - run.best_epoch} epochs without improvement` : "ran the full 90 epochs") : "";
+  let h = `<div class="head"><h2>${run.id} · split ${run.split}</h2><span class="badge ${run.state}">${run.status}</span>
     <code>runs/${esc(run.dir)}</code>${run.warning ? `<span class="flag">⚠ ${esc(run.warning)}</span>` : ""}</div>
     <div class="facts"><span>${esc(run.desc)}</span>
     <span>Best epoch <b>${run.best_epoch ?? "–"}</b> of <b>${n}</b>${stopped ? " — " + stopped : ""}</span>
@@ -523,14 +525,17 @@ function render(dir) {
     ${t.n_clips ? `<span>Test <b>${t.n_clips}</b> clips from <b>${t.n_actors}</b> actors</span>` : ""}</div>`;
   if (run.test) {
     h += `<div class="tiles">`;
-    for (const head of ["displayed_emotion", "perceived_emotion", "displayed_valence"]) if (t[head]) {
-      const s = t[head].accuracy_by_sex || {};
-      h += tile(`${HEADS[head]} — test accuracy`, pct(t[head].accuracy),
-        `macro-F1 ${pct(t[head].macro_f1)} · female ${pct(s.Female)} · male ${pct(s.Male)} · ${t[head].n} clips`,
-        deltaVsBaseline(head, t[head].accuracy, false));
-    }
-    for (const head of ["perceived_intensity", "displayed_intensity"]) if (t[head])
-      h += tile(`${HEADS[head]} — test MAE`, num(t[head].mae), `${t[head].n} clips`, deltaVsBaseline(head, t[head].mae, true));
+    // Priority order (ADR 0014): valence macro-F1, the two intensity MAEs, then the emotion heads.
+    const classTile = head => {
+      const s = t[head].macro_f1_by_sex || {};
+      return tile(`${HEADS[head]} — test macro-F1`, pct(t[head].macro_f1),
+        `accuracy ${pct(t[head].accuracy)} · F1 female ${pct(s.Female)} · male ${pct(s.Male)} · ${t[head].n} clips`,
+        deltaVsBaseline(head + ".macro_f1", t[head].macro_f1, false));
+    };
+    if (t.displayed_valence) h += classTile("displayed_valence");
+    for (const head of ["displayed_intensity", "perceived_intensity"]) if (t[head])
+      h += tile(`${HEADS[head]} — test MAE`, num(t[head].mae), `${t[head].n} clips`, deltaVsBaseline(head + ".mae", t[head].mae, true));
+    for (const head of ["displayed_emotion", "perceived_emotion"]) if (t[head]) h += classTile(head);
     h += `</div>`;
   } else h += `<p class="empty-note">No test scores: this run did not finish.</p>`;
   h += `<h3>Learning curves</h3>
@@ -599,8 +604,8 @@ def baseline(runs: list[dict]) -> dict[str, float]:
     out = {}
     for _, head, name, _ in COLUMNS:
         values = [v for v in (metric(r, head, name) for r in counted) if v is not None]
-        if values and name != "macro_f1":
-            out[head] = statistics.mean(values)
+        if values:
+            out[f"{head}.{name}"] = statistics.mean(values)
     return out
 
 

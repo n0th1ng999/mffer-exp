@@ -13,13 +13,14 @@ i.e. one pass over all training rows, so rounds and centralised epochs cost the 
   and compensates loss weights with its own label coverage. Clients keep no state between rounds: every
   round starts from the global weights with a fresh Adam (standard FedAvg; makes resume exact).
 - Server: FedAvg weighted by client size. After every round it scores the global model on the val actors,
-  with the clients' audio statistics pooled exactly (`AudioStats.combine`: only 26 numbers per client), and
+  with the clients' audio statistics pooled exactly (`AudioStats.combine`: 27 numbers per client), and
   saves the global weights (resume point) and the best round's weights.
 - FedProx (F4): `federated: {..., mu: 0.01}` adds (mu/2)·||w - w_global||² to every client's training
   loss, which keeps a client from drifting far from the global model in its local epoch. The server side
   is plain FedAvg (FedProx changes only the client). Without `mu`, clients run plain `model.fit`.
-- One Flower simulation process; clients run one at a time, each on the CPU (see mffer.train). Every round
-  checks that all clients reported and that none of them saw a GPU.
+- One Flower simulation process; clients run one at a time, on the run's device (mffer.device: CPU on
+  macOS, CUDA on Linux with an NVIDIA GPU). Every round checks that all clients reported and that every
+  client trained on that same device.
 
 Run directory: the files of `mffer.train` (epochs.csv has one row per round, `epoch` = round - 1), plus
 `audio_stats_c<k>.json` per client.
@@ -36,21 +37,12 @@ import pandas as pd
 import tensorflow as tf
 import yaml
 
+from mffer import device
 from mffer.config import load_run_config
 from mffer.data.pipeline import AudioStats, Cremad, fit_stats, label_coverage, make_dataset
 from mffer.data.splits import client_rows, rows
 from mffer.models import build_model, compile_model, spec_from_config
 from mffer.train import DEFAULTS, new_run, print_test, score_test
-
-
-def hide_gpu() -> None:
-    """CPU only (see mffer.train). Must run before TensorFlow touches a device in this process; clients
-    report the GPUs they see every round, so a failure here is caught, not silent."""
-    try:
-        tf.config.set_visible_devices([], "GPU")
-    except RuntimeError:   # devices already initialised in this process; the per-round check decides
-        pass
-
 
 # ---------------------------------------------------------------- client (runs in a Flower/Ray worker)
 
@@ -109,7 +101,7 @@ def client_fit(run_dir: Path, client: int, parameters: list[np.ndarray], round_:
     print(f"round {round_} client {client}: {len(own)} clips, loss {metrics['loss']:.3f}, {seconds:.0f} s",
           flush=True)
     return model.get_weights(), len(own), {**metrics, "seconds": seconds,
-                                            "n_gpus": len(tf.config.get_visible_devices("GPU"))}
+                                            "device": device.current()}
 
 
 def make_client_app(run_dir: Path):
@@ -123,7 +115,7 @@ def make_client_app(run_dir: Path):
             return client_fit(run_dir, self.client, parameters, int(config["round"]))
 
     def client_fn(context):
-        hide_gpu()
+        device.configure()
         return Client(int(context.node_config["partition-id"])).to_client()
 
     return ClientApp(client_fn=client_fn)
@@ -170,13 +162,13 @@ class RoundLog:
         self.started = time.perf_counter()
 
 
-def make_strategy(log: RoundLog, n_clients: int, initial: list[np.ndarray]):
+def make_strategy(log: RoundLog, n_clients: int, initial: list[np.ndarray], expected_device: str):
     from flwr.common import ndarrays_to_parameters, parameters_to_ndarrays
     from flwr.server.strategy import FedAvg
 
     class Strategy(FedAvg):
         """FedAvg that (1) fails the run if any client fails, instead of averaging the survivors,
-        (2) asserts the clients trained on the CPU, (3) evaluates on val and stops early via `log`."""
+        (2) asserts every client trained on the run's device, (3) evaluates on val and stops early via `log`."""
 
         def configure_fit(self, server_round, parameters, client_manager):
             return [] if log.finished else super().configure_fit(server_round, parameters, client_manager)
@@ -187,12 +179,12 @@ def make_strategy(log: RoundLog, n_clients: int, initial: list[np.ndarray]):
                 raise RuntimeError(f"round {server_round}: {len(results)} of {n_clients} clients reported; "
                                    f"{len(failures)} failed: ...{first}")
             metrics = [(r.num_examples, r.metrics) for _, r in results]
-            gpus = [m["n_gpus"] for _, m in metrics]
-            if any(gpus):
-                raise RuntimeError(f"a client trained with a visible GPU: {gpus}")
+            devices = [m["device"] for _, m in metrics]
+            if set(devices) != {expected_device}:
+                raise RuntimeError(f"clients trained on {devices}, the run uses {expected_device}")
             n = sum(k for k, _ in metrics)
             log.train_metrics = {key: sum(k * m[key] for k, m in metrics) / n
-                                 for key in metrics[0][1] if key not in ("n_gpus", "seconds")}
+                                 for key in metrics[0][1] if key not in ("device", "seconds")}
             log.train_metrics["client_seconds"] = sum(m["seconds"] for _, m in metrics)
             return super().aggregate_fit(server_round, results, failures)
 
@@ -214,6 +206,7 @@ def run(run_dir: Path) -> dict:
 
     config = yaml.safe_load((run_dir / "config.yaml").read_text())
     meta = json.loads((run_dir / "meta.json").read_text())
+    device.check_resume(meta)
     fed = config["federated"]
     keras.utils.set_random_seed(meta["seed"])
     spec = spec_from_config(config["model"])
@@ -237,18 +230,20 @@ def run(run_dir: Path) -> dict:
         meta.update(parameters=model.count_params(), update_bytes=4 * model.count_params(),
                     clients=[{"clips": len(c), "actors": int(data.clips.actor_id.iloc[c].nunique())} for c in clients],
                     client_optimizer="fresh Adam(1e-4) every round; clients keep no state")
-    meta["client_gpus_checked"] = True   # aggregate_fit raises if a client saw a GPU
+    meta["client_devices_checked"] = True   # aggregate_fit raises if a client used another device
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=1))
 
     if not log.finished:
         start = time.perf_counter()
-        strategy = make_strategy(log, len(clients), model.get_weights())
+        strategy = make_strategy(log, len(clients), model.get_weights(), meta["device"])
         rounds = config["max_epochs"] - log.done
         run_simulation(
             server_app=ServerApp(server_fn=lambda context: ServerAppComponents(
                 strategy=strategy, config=ServerConfig(num_rounds=rounds))),
             client_app=make_client_app(run_dir), num_supernodes=len(clients),
-            backend_config={"client_resources": {"num_cpus": os.cpu_count(), "num_gpus": 0.0}},  # one at a time
+            # One client at a time: each asks for all CPUs (and the GPU on CUDA, which Ray then exposes to it).
+            backend_config={"client_resources": {"num_cpus": os.cpu_count(),
+                                                 "num_gpus": 1.0 if meta["device"] == "cuda" else 0.0}},
         )
         meta["train_minutes"] = meta.get("train_minutes", 0) + (time.perf_counter() - start) / 60
         # Flower may log a server error instead of raising it: check the outcome before scoring test.
@@ -267,7 +262,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, help="weight-initialisation seed (default: the split id)")
     parser.add_argument("--resume", type=Path, help="run directory to continue")
     args = parser.parse_args()
-    hide_gpu()
+    print(f"device: {device.configure()} {device.names()}")
     if args.resume:
         run_dir = args.resume.resolve()
     else:

@@ -1,6 +1,6 @@
 # 0009. FL: a client failure or a visible GPU fails the run
 
-- **Status:** Accepted, 19 Nov 2026
+- **Status:** Accepted, 19 Nov 2026. The GPU check became a device check in [0015](0015-cuda-allowed-metal-not.md)
 - **Where:** `mffer/federated.py` (`aggregate_fit`, `accept_failures=False`, post-simulation checks)
 
 ## Context

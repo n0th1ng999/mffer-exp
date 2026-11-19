@@ -4,6 +4,7 @@ import pytest
 
 from mffer.data.pipeline import AudioStats, Cremad, fit_stats, label_coverage, make_dataset
 from mffer.data.splits import partition, rows
+from mffer.metrics import MONITOR
 from mffer.models import PRESETS, build_model
 
 
@@ -93,6 +94,7 @@ def test_keras_trains_on_the_dataset_with_masked_heads(data):
     history = model.fit(make_dataset(data, train, spec, stats, training=True), epochs=1, verbose=0)
     assert np.isfinite(history.history["loss"][0])
     assert "displayed_intensity_mae" in history.history
+    assert MONITOR.removeprefix("val_") in history.history   # the early-stopping metric is logged
 
 
 @pytest.mark.parametrize("split_id", [0, 1, 2])

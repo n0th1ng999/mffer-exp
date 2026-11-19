@@ -13,6 +13,16 @@ from mffer.data.cremad import EMOTIONS, VALENCES
 CLASSES = {"displayed_emotion": EMOTIONS, "perceived_emotion": EMOTIONS, "displayed_valence": VALENCES}
 INTENSITIES = ["displayed_intensity", "perceived_intensity"]
 
+# The paper's metrics in priority order (ADR 0014): valence macro-F1 is primary (did the customer react
+# well?); macro, because always answering "negative" already scores 68% accuracy. Then the two intensity MAEs.
+PRIORITY = ["displayed_valence.macro_f1", "displayed_intensity.mae", "perceived_intensity.mae"]
+# Its validation version picks the epoch (or round) in every training mode; logged by models.compile_model.
+MONITOR = "val_displayed_valence_macro_f1"
+
+
+def macro_f1(true: pd.Series, pred: pd.Series, labels: list[str]) -> float:
+    return float(f1_score(true, pred, labels=labels, average="macro", zero_division=0))
+
 
 def predictions_table(clips: pd.DataFrame, rows: np.ndarray, targets: dict, weights: dict,
                       outputs: dict[str, np.ndarray]) -> pd.DataFrame:
@@ -42,9 +52,10 @@ def compute(table: pd.DataFrame) -> dict:
         result[head] = {
             "n": len(scored),
             "accuracy": float(correct.mean()),
-            "macro_f1": float(f1_score(scored[f"{head}_true"], scored[f"{head}_pred"],
-                                       labels=CLASSES[head], average="macro", zero_division=0)),
+            "macro_f1": macro_f1(scored[f"{head}_true"], scored[f"{head}_pred"], CLASSES[head]),
             "accuracy_by_sex": {sex: float(c.mean()) for sex, c in correct.groupby(scored["sex"])},
+            "macro_f1_by_sex": {sex: macro_f1(g[f"{head}_true"], g[f"{head}_pred"], CLASSES[head])
+                                for sex, g in scored.groupby("sex")},
         }
     for head in INTENSITIES:
         if f"{head}_pred" not in table:

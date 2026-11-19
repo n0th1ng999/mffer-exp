@@ -152,8 +152,10 @@ def compile_model(model: keras.Model, spec: ModelSpec, coverage: dict[str, float
         optimizer=keras.optimizers.Adam(1e-4),
         loss={name: HEADS[name][2] for name in spec.heads},
         loss_weights={h: w / (coverage or {}).get(h, 1.0) for h, w in spec.loss_weights.items()},
-        # weighted, so masked clips (sample weight 0) don't count in the logged metrics either
-        weighted_metrics={name: ["accuracy"] if HEADS[name][2] != "mse" else ["mae"] for name in spec.heads},
+        # weighted, so masked clips (sample weight 0) don't count in the logged metrics either. Macro-F1 per
+        # classification head: argmax per clip, accumulated over the epoch; equals metrics.macro_f1 (tested).
+        weighted_metrics={name: ["accuracy", keras.metrics.F1Score(average="macro", name="macro_f1")]
+                          if HEADS[name][2] != "mse" else ["mae"] for name in spec.heads},
     )
     return model
 

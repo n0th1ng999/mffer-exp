@@ -5,12 +5,18 @@
 Writes into the paper project (`paper` in configs/paths.yaml); nothing there is typed by hand:
 - notes/results-ledger.md: one row per run directory, with its status;
 - generated/tab-main.tex (B0, U1, U2, C1, C2), tab-ladder.tex (D1-D4, C2), tab-federated.tex (C2, F1, F2,
-  L1), tab-sex.tex (displayed-emotion accuracy by sex): `tabular` bodies only, so captions and labels stay
+  L1, F3, F4), tab-sex.tex (valence macro-F1 by sex): `tabular` bodies only, so captions and labels stay
   in the section text (`\\input{generated/tab-main}`). Each lists the run IDs behind it in a comment;
-- generated/fig-curves.pdf: val displayed-emotion accuracy per epoch (or round), one line per counted run.
+- generated/fig-curves.pdf: val valence macro-F1 per epoch (or round), one line per counted run.
 
-Which runs count: per (config, split), the latest finished run trained on the CPU (`meta.json` "gpu" empty).
-Earlier finished runs are "superseded", GPU runs "invalid" (the Metal GPU diverges, see mffer.train).
+Columns follow the metric priority (metrics.PRIORITY, ADR 0014): valence macro-F1, displayed-intensity MAE,
+perceived-intensity MAE, then the secondary scores.
+
+Which runs count: per (config, split), the latest finished run trained on the CPU or CUDA (mffer.device)
+that selected its epoch with the current monitor (metrics.MONITOR; a trained run whose config.yaml names
+another monitor is "invalid (old monitor)"). Earlier finished runs are "superseded"; Metal GPU runs are
+"invalid (GPU)" (the Metal GPU diverges, ADR 0001). Runs from before 19 Nov have no `device`: a GPU among
+them was Metal.
 An experiment's score on a split is the mean over its configs (L1: its two clients, both required); the
 tables give mean ± sd over splits. Gaps to C2 are paired: mean ± sd of the per-split differences.
 """
@@ -21,8 +27,10 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 from mffer.config import load_paths
+from mffer.metrics import MONITOR, PRIORITY
 
 RUN_DIR = re.compile(r"^(?P<config>.+)-s(?P<split>\d)-(?P<stamp>\d{8}-\d{4})$")
 EXPERIMENTS = {  # README ID: (description, configs averaged per split)
@@ -47,16 +55,20 @@ CONFIG_ID = {config: eid for eid, (_, configs) in EXPERIMENTS.items() for config
 TABLES = {"main": (["B0", "U1", "U2", "C1", "C2"], None), "ladder": (["C1", "D1", "D2", "D3", "D4", "C2"], [0]),
           "federated": (["C2", "F1", "F2", "L1", "F3", "F4"], None)}
 # (column, LaTeX header, kind): kind "pct" = share shown in %, "mae" = 3 decimals, "num" = 1 decimal
+# Priority order first (primary, then the two intensities), then secondary scores. Valence accuracy stays
+# visible because it shows why it is not the primary: always answering "negative" scores 68%.
 METRICS = [
-    ("displayed_emotion.accuracy", "Displ.\\ emo.\\ acc", "pct"),
-    ("displayed_emotion.macro_f1", "Displ.\\ emo.\\ F1", "pct"),
-    ("perceived_emotion.accuracy", "Perc.\\ emo.\\ acc", "pct"),
-    ("displayed_valence.accuracy", "Valence acc", "pct"),
-    ("perceived_intensity.mae", "Perc.\\ int.\\ MAE", "mae"),
+    ("displayed_valence.macro_f1", "Valence F1", "pct"),
     ("displayed_intensity.mae", "Displ.\\ int.\\ MAE", "mae"),
+    ("perceived_intensity.mae", "Perc.\\ int.\\ MAE", "mae"),
+    ("displayed_valence.accuracy", "Valence acc", "pct"),
+    ("displayed_emotion.macro_f1", "Displ.\\ emo.\\ F1", "pct"),
+    ("perceived_emotion.macro_f1", "Perc.\\ emo.\\ F1", "pct"),
 ]
-SEX = [("displayed_emotion.accuracy_by_sex.Female", "Female", "pct"),
-       ("displayed_emotion.accuracy_by_sex.Male", "Male", "pct")]
+assert [key for key, _, _ in METRICS[:len(PRIORITY)]] == PRIORITY
+PRIMARY = PRIORITY[0]
+SEX = [("displayed_valence.macro_f1_by_sex.Female", "Female", "pct"),
+       ("displayed_valence.macro_f1_by_sex.Male", "Male", "pct")]
 
 
 # ---------------------------------------------------------------- loading
@@ -70,10 +82,12 @@ def load_runs(runs_dir: Path) -> pd.DataFrame:
             continue
         meta = json.loads((path / "meta.json").read_text()) if (path / "meta.json").exists() else {}
         result = json.loads((path / "test.json").read_text()) if (path / "test.json").exists() else None
+        config = yaml.safe_load((path / "config.yaml").read_text()) if (path / "config.yaml").exists() else {}
         record = {"run": path.name, "config": match["config"], "id": CONFIG_ID.get(match["config"]),
-                  "split": int(match["split"]), "git": meta.get("git"), "gpu": bool(meta.get("gpu")),
+                  "split": int(match["split"]), "git": meta.get("git"), "device": meta.get("device", "metal" if meta.get("gpu") else "cpu"),
                   "parameters": meta.get("parameters"), "update_bytes": meta.get("update_bytes"),
-                  "train_minutes": meta.get("train_minutes"), "finished": result is not None}
+                  "train_minutes": meta.get("train_minutes"), "finished": result is not None,
+                  "old_monitor": config.get("monitor", MONITOR) != MONITOR}   # B0 trains nothing: no monitor
         if result:
             record.update(best_epoch=result.get("best_epoch"), epochs_run=result.get("epochs_run"),
                           **pd.json_normalize(result["test"]).iloc[0].to_dict())
@@ -82,8 +96,10 @@ def load_runs(runs_dir: Path) -> pd.DataFrame:
     if runs.empty:
         return runs
     runs["status"] = "incomplete"
-    runs.loc[runs.finished & runs.gpu, "status"] = "invalid (GPU)"
-    valid = runs.finished & ~runs.gpu
+    runs.loc[runs.finished & runs.old_monitor, "status"] = "invalid (old monitor)"
+    metal = ~runs.device.isin(["cpu", "cuda"])
+    runs.loc[runs.finished & metal, "status"] = "invalid (GPU)"
+    valid = runs.finished & ~metal & ~runs.old_monitor
     latest = runs[valid].groupby(["config", "split"]).run.max()   # names sort by time stamp
     runs.loc[valid, "status"] = "superseded"
     runs.loc[runs.run.isin(latest), "status"] = "counted"
@@ -152,7 +168,7 @@ def results_table(runs: pd.DataFrame, ids: list[str], federated: bool = False,
     """Federated: all rows are M3, so Params gives way to the update size and the paired gap to C2."""
     reference = per_split(runs, "C2", splits)
     header = ["ID", "Configuration", "n"] + [h for _, h, _ in METRICS]
-    header += ["Min/ep.", "Update (MB)", "$\\Delta$ displ.\\ acc vs C2 (pp)"] if federated else ["Params", "Min/ep."]
+    header += ["Min/ep.", "Update (MB)", "$\\Delta$ valence F1 vs C2 (pp)"] if federated else ["Params", "Min/ep."]
     rows, sources = [], []
     for eid in ids:
         scores = per_split(runs, eid, splits)
@@ -166,7 +182,7 @@ def results_table(runs: pd.DataFrame, ids: list[str], federated: bool = False,
         if federated:
             update = column(scores, "update_bytes")
             row.append(f"{update[0] / 1e6:.2f}" if update and pd.notna(update[0]) else "--")
-            key = "displayed_emotion.accuracy"
+            key = PRIMARY
             paired = [] if eid == "C2" or reference.empty or scores.empty else \
                 (scores[key] - reference[key]).dropna().tolist()
             row.append("--" if not paired else fmt(paired, "pct"))
@@ -189,19 +205,20 @@ def sex_table(runs: pd.DataFrame) -> str:
 
 
 def ledger(runs: pd.DataFrame) -> str:
-    keys = [("Displ. acc", "displayed_emotion.accuracy", "pct"), ("Displ. F1", "displayed_emotion.macro_f1", "pct"),
-            ("Perc. acc", "perceived_emotion.accuracy", "pct"), ("Val. acc", "displayed_valence.accuracy", "pct"),
-            ("Perc. MAE", "perceived_intensity.mae", "mae"), ("Displ. MAE", "displayed_intensity.mae", "mae"),
-            ("F acc", SEX[0][0], "pct"), ("M acc", SEX[1][0], "pct")]
+    keys = [("Val. F1", PRIMARY, "pct"), ("Displ. int. MAE", "displayed_intensity.mae", "mae"),
+            ("Perc. int. MAE", "perceived_intensity.mae", "mae"), ("Val. acc", "displayed_valence.accuracy", "pct"),
+            ("Displ. emo. F1", "displayed_emotion.macro_f1", "pct"), ("Perc. emo. F1", "perceived_emotion.macro_f1", "pct"),
+            ("Val. F1 female", SEX[0][0], "pct"), ("Val. F1 male", SEX[1][0], "pct")]
     lines = ["# Results ledger", "",
              f"Generated by `python -m mffer.report` (mffer-exp) on {datetime.now():%d %b %Y %H:%M}; do not edit.",
              "One row per run directory. Only **counted** runs enter the paper tables: the latest finished",
-             "CPU run per configuration and split. Test scores at the val-selected epoch (or round).", "",
-             "| Run ID | Exp. | Split | Status | Git | Best / epochs | Min | " +
+             "CPU or CUDA run per configuration and split, selected on val valence macro-F1. Test scores at the",
+             "val-selected epoch (or round).", "",
+             "| Run ID | Exp. | Split | Status | Git | Device | Best / epochs | Min | " +
              " | ".join(k for k, _, _ in keys) + " |",
-             "|" + "---|" * (7 + len(keys))]
+             "|" + "---|" * (8 + len(keys))]
     for _, r in runs.sort_values(["id", "config", "split", "run"], na_position="last").iterrows():
-        cells = [f"`{r['run']}`", r["id"] if isinstance(r["id"], str) else "?", str(r["split"]), r["status"], f"`{r['git']}`",
+        cells = [f"`{r['run']}`", r["id"] if isinstance(r["id"], str) else "?", str(r["split"]), r["status"], f"`{r['git']}`", r["device"],
                  f"{r.get('best_epoch'):.0f} / {r.get('epochs_run'):.0f}" if r["finished"] else "–",
                  f"{r['train_minutes']:.0f}" if pd.notna(r["train_minutes"]) else "–"]
         cells += [fmt([r[key]], kind, latex=False) if key in r else "–" for _, key, kind in keys]
@@ -225,7 +242,7 @@ def curves_figure(runs: pd.DataFrame, runs_dir: Path, out: Path) -> None:
         for i, eid in enumerate(ids):
             counted = runs[(runs.status == "counted") & runs.config.isin(EXPERIMENTS[eid][1])] if len(runs) else runs
             for j, run in enumerate(counted.run):
-                curve = pd.read_csv(runs_dir / run / "epochs.csv")["val_displayed_emotion_accuracy"]
+                curve = pd.read_csv(runs_dir / run / "epochs.csv")[MONITOR]
                 ax.plot(range(1, len(curve) + 1), 100 * curve, styles[i], color=greys[i], linewidth=0.8,
                         label=eid if j == 0 else None)
         ax.set_title(title)
@@ -233,7 +250,7 @@ def curves_figure(runs: pd.DataFrame, runs_dir: Path, out: Path) -> None:
         ax.grid(color="0.9", linewidth=0.5)
         if ax.get_legend_handles_labels()[0]:
             ax.legend(frameon=False)
-    axes[0].set_ylabel("Val displayed-emotion acc (%)")
+    axes[0].set_ylabel("Val valence macro-F1 (%)")
     fig.savefig(out)
     plt.close(fig)
 

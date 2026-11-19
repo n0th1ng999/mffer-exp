@@ -12,10 +12,10 @@ Rules:
 
 | # | Decision | Status |
 |---|---|---|
-| [0001](0001-cpu-only-training.md) | Train on the CPU only; GPU runs are invalid | Accepted, 18 Nov 2026 |
+| [0001](0001-cpu-only-training.md) | Train on the CPU only; GPU runs are invalid | Accepted, 18 Nov 2026; CPU-only superseded by 0015 |
 | [0002](0002-frozen-actor-splits.md) | Three frozen actor-grouped, sex-stratified splits; seed = split id | Accepted, 18 Nov 2026 |
-| [0003](0003-test-once-val-selected.md) | Early stopping on val; test scored once with the best weights | Accepted, 18 Nov 2026 |
-| [0004](0004-training-budget-90.md) | Budget of 90 epochs (or rounds), patience 5, for every configuration | Accepted, 18 Nov 2026 |
+| [0003](0003-test-once-val-selected.md) | Early stopping on val; test scored once with the best weights | Accepted, 18 Nov 2026; metric superseded by 0014 |
+| [0004](0004-training-budget-90.md) | Budget of 90 epochs (or rounds), patience 5, for every configuration | Accepted, 18 Nov 2026; metric superseded by 0014 |
 | [0005](0005-one-model-builder.md) | One model builder; every configuration is a preset of flags | Accepted, 18 Nov 2026 |
 | [0006](0006-masked-heads-coverage.md) | Missing labels masked per head; loss weight divided by label coverage | Accepted, 18 Nov 2026 |
 | [0007](0007-fl-round-protocol.md) | FL: one local epoch per round, fresh Adam per round, server-side val | Accepted, 19 Nov 2026 |
@@ -25,3 +25,5 @@ Rules:
 | [0011](0011-generated-paper-numbers.md) | Paper numbers come only from counted run directories | Accepted, 19 Nov 2026 |
 | [0012](0012-fedprox-untuned-mu.md) | FedProx with μ = 0.01, not tuned | Accepted, 19 Nov 2026 |
 | [0013](0013-lint-no-formatter.md) | Lint with ruff, no auto-formatter; hooks outside the experiment env | Accepted, 19 Nov 2026 |
+| [0014](0014-primary-metric-valence-f1.md) | Primary metric valence macro-F1, then displayed and perceived intensity MAE; it picks the epoch | Accepted, 19 Nov 2026 |
+| [0015](0015-cuda-allowed-metal-not.md) | Train on CUDA where available; Metal stays hidden; device recorded and checked | Accepted, 19 Nov 2026 (CUDA check pending) |

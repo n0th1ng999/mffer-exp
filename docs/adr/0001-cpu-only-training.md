@@ -1,6 +1,7 @@
 # 0001. Train on the CPU only; GPU runs are invalid
 
-- **Status:** Accepted, 18 Nov 2026
+- **Status:** Accepted, 18 Nov 2026. CPU-only-everywhere superseded by [0015](0015-cuda-allowed-metal-not.md)
+  (CUDA allowed); Metal stays invalid
 - **Where:** `mffer/train.py` (`main` hides the GPU), `mffer/federated.py` (`hide_gpu`, per-round `n_gpus` check), `mffer/report.py` (status `invalid (GPU)`)
 
 ## Context

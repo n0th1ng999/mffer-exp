@@ -5,7 +5,7 @@
     python -m mffer.train --resume runs/c1_m1-s0-20261118-2030      # continue after a crash
 
 Same protocol for every configuration: Adam 1e-4, batch 16, at most `max_epochs`, early stopping with
-`patience` on `monitor` (val displayed-emotion accuracy). The full model is saved after every epoch (so a
+`patience` on `monitor` (val valence macro-F1, the primary metric: ADR 0014). The full model is saved after every epoch (so a
 crash costs one epoch) and the best epoch's weights separately. The test split is scored exactly once, at
 the end, with the best weights; its predictions and metrics are written to the run directory.
 
@@ -13,8 +13,8 @@ Local-only mode (L1): a config with `local: {clients: N, partition: actor}` plus
 training rows of federated client k only (`splits.client_rows`, the same rows that client holds in F2) and
 is otherwise identical: same val and test actors, same stopping rule. Run name: `<name>_c<k>`.
 
-Training runs on the CPU: on the Metal GPU (tensorflow-metal 1.2.0, with TF 2.18 and 2.19) the same code,
-data and seed diverge after 3-4 epochs while the CPU trains cleanly (scripts/lab_stability.py, 18 Nov 2026).
+Device: CPU on macOS (the Metal GPU diverges), CUDA on Linux/WSL2 with an NVIDIA GPU; see mffer.device and
+ADR 0015. `MFFER_CPU=1` forces the CPU.
 """
 import argparse
 import json
@@ -30,13 +30,14 @@ import pandas as pd
 import tensorflow as tf
 import yaml
 
+from mffer import device
 from mffer.config import ROOT, load_paths, load_run_config
 from mffer.data.pipeline import AudioStats, Cremad, fit_stats, label_coverage, make_dataset
 from mffer.data.splits import client_rows, rows
-from mffer.metrics import compute, predictions_table
+from mffer.metrics import MONITOR, compute, predictions_table
 from mffer.models import build_model, spec_from_config
 
-DEFAULTS = {"max_epochs": 90, "patience": 5, "monitor": "val_displayed_emotion_accuracy", "batch_size": 16}
+DEFAULTS = {"max_epochs": 90, "patience": 5, "monitor": MONITOR, "batch_size": 16}
 
 
 class EpochCheckpoint(keras.callbacks.Callback):
@@ -84,8 +85,7 @@ def new_run(config_file: Path, split_id: int, seed: int | None, client: int | No
     meta = {"config_file": str(config_file), "split": split_id, "seed": split_id if seed is None else seed,
             "git": git_version(), "tensorflow": tf.__version__, "keras": keras.__version__,
             "machine": f"{platform.platform()} {platform.processor()}",
-            "gpu": [d.name for d in tf.config.get_visible_devices("GPU")],   # [] = trained on the CPU
-             "started": datetime.now().isoformat()}
+            "device": device.current(), "gpu": device.names(), "started": datetime.now().isoformat()}
     (run_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=1))
     return run_dir
@@ -94,6 +94,7 @@ def new_run(config_file: Path, split_id: int, seed: int | None, client: int | No
 def run(run_dir: Path) -> dict:
     config = yaml.safe_load((run_dir / "config.yaml").read_text())
     meta = json.loads((run_dir / "meta.json").read_text())
+    device.check_resume(meta)
     keras.utils.set_random_seed(meta["seed"])
     spec = spec_from_config(config["model"])
     data = Cremad()
@@ -151,12 +152,15 @@ def score_test(run_dir: Path, model: keras.Model, data: Cremad, test: np.ndarray
 
 
 def print_test(test: dict) -> None:
-    for head in ("displayed_emotion", "perceived_emotion", "displayed_valence"):
-        if head in test:
-            print(f"test {head}: accuracy {test[head]['accuracy']:.3f}, macro-F1 {test[head]['macro_f1']:.3f}")
-    for head in ("displayed_intensity", "perceived_intensity"):
-        if head in test:
+    """Primary metric first, then the intensities (ADR 0014), then the other heads."""
+    for head in ("displayed_valence", "displayed_intensity", "perceived_intensity",
+                 "displayed_emotion", "perceived_emotion"):
+        if head not in test:
+            continue
+        if "mae" in test[head]:
             print(f"test {head}: MAE {test[head]['mae']:.3f}")
+        else:
+            print(f"test {head}: macro-F1 {test[head]['macro_f1']:.3f}, accuracy {test[head]['accuracy']:.3f}")
 
 
 def main() -> None:
@@ -167,7 +171,7 @@ def main() -> None:
     parser.add_argument("--client", type=int, help="local-only: train on this federated client's rows only")
     parser.add_argument("--resume", type=Path, help="run directory to continue")
     args = parser.parse_args()
-    tf.config.set_visible_devices([], "GPU")   # CPU only: see the module docstring
+    print(f"device: {device.configure()} {device.names()}")
     if args.resume:
         run_dir = args.resume
     else:
