@@ -35,14 +35,14 @@ def trained(mu: float | None, steps=20):
 
 
 def distance(a, b):
-    return sum(float(((u - v) ** 2).sum()) for u, v in zip(a, b))
+    return sum(float(((u - v) ** 2).sum()) for u, v in zip(a, b, strict=True))
 
 
 def test_mu_zero_matches_plain_training_and_keeps_the_weight_list():
     plain, _ = trained(None)
     prox, _ = trained(0.0)
     assert len(prox.get_weights()) == len(plain.get_weights())   # FedAvg exchanges the same arrays
-    assert all(np.array_equal(a, b) for a, b in zip(plain.get_weights(), prox.get_weights()))
+    assert all(np.array_equal(a, b) for a, b in zip(plain.get_weights(), prox.get_weights(), strict=True))
 
 
 def test_larger_mu_stays_closer_to_the_global_weights():

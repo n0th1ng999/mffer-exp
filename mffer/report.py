@@ -221,7 +221,7 @@ def curves_figure(runs: pd.DataFrame, runs_dir: Path, out: Path) -> None:
     styles = ["-", "--", ":", "-."]
     greys = ["0.0", "0.35", "0.55", "0.7"]
     fig, axes = plt.subplots(1, 2, figsize=(4.8, 1.9), sharey=True, constrained_layout=True)
-    for ax, (title, ids) in zip(axes, panels):
+    for ax, (title, ids) in zip(axes, panels, strict=True):
         for i, eid in enumerate(ids):
             counted = runs[(runs.status == "counted") & runs.config.isin(EXPERIMENTS[eid][1])] if len(runs) else runs
             for j, run in enumerate(counted.run):

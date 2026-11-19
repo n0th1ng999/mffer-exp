@@ -30,7 +30,7 @@ def runs(tmp_path):
 
 
 def test_latest_finished_cpu_run_counts(runs):
-    status = dict(zip(runs.run, runs.status))
+    status = dict(zip(runs.run, runs.status, strict=True))
     assert status["c2_m3-s0-20261121-1000"] == "counted"
     assert status["c2_m3-s0-20261120-1000"] == "superseded"
     assert status["c2_m3-s0-20261122-1000"] == "invalid (GPU)"

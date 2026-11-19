@@ -18,13 +18,12 @@ Writes `<processed>/clips.csv`.
 import argparse
 import subprocess
 
-import numpy as np
 import pandas as pd
 
 from mffer.config import load_paths
 
 EMOTIONS = ["ANG", "DIS", "FEA", "HAP", "NEU", "SAD"]
-VOTE_TO_EMOTION = dict(zip("ADFHNS", EMOTIONS))
+VOTE_TO_EMOTION = dict(zip("ADFHNS", EMOTIONS, strict=True))
 VALENCE = {"HAP": "positive", "NEU": "neutral", "ANG": "negative", "DIS": "negative",
            "FEA": "negative", "SAD": "negative"}
 VALENCES = ["negative", "neutral", "positive"]

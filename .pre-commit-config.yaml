@@ -1,0 +1,24 @@
+# Install once:  brew install pre-commit && pre-commit install --hook-type pre-commit --hook-type pre-push
+# pre-commit is kept out of the `mffer` env: its virtualenv dependency conflicts with flwr's `packaging` pin.
+exclude: ^splits/   # frozen split files: byte-for-byte as generated
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files   # no data, checkpoints or HDF5 in git
+        args: [--maxkb=1000]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.0
+    hooks:
+      - id: ruff-check
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest (invariant tests, real data; ~25 s)
+        entry: conda run -n mffer python -m pytest -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

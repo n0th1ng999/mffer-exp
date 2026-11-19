@@ -76,7 +76,9 @@ def test_evaluation_keeps_row_order_and_inputs_follow_the_spec(data):
 def test_training_order_is_reshuffled_each_epoch_but_reproducible(data):
     some = rows(data.clips, 0, "train")[:64]
     stats = fit_stats(data, some)
-    first = lambda ds: next(iter(ds))[1]["displayed_emotion"].numpy()
+    def first(ds):
+        return next(iter(ds))[1]["displayed_emotion"].numpy()
+
     ds = make_dataset(data, some, PRESETS["m1"], stats, training=True, seed=7)
     epoch0, epoch1 = first(ds), first(ds)
     again = first(make_dataset(data, some, PRESETS["m1"], stats, training=True, seed=7))
@@ -100,4 +102,4 @@ def test_local_only_client_holds_the_rows_of_the_same_federated_client(data, spl
     train = rows(data.clips, split_id, "train")
     federated = partition(data.clips, train, n_clients=2, mode="actor", seed=split_id)
     local = client_rows(data.clips, split_id, 2, "actor")
-    assert all(np.array_equal(f, l) for f, l in zip(federated, local))
+    assert all(np.array_equal(fed, loc) for fed, loc in zip(federated, local, strict=True))

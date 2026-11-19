@@ -23,9 +23,9 @@ import tensorflow as tf  # noqa: E402
 if args.cpu:
     tf.config.set_visible_devices([], "GPU")
 
+from mffer import models  # noqa: E402
 from mffer.data.pipeline import Cremad, fit_stats, label_coverage, make_dataset  # noqa: E402
 from mffer.data.splits import rows  # noqa: E402
-from mffer import models  # noqa: E402
 
 _adam = keras.optimizers.Adam
 keras.optimizers.Adam = lambda _lr: _adam(learning_rate=args.lr, clipnorm=args.clipnorm)  # build_model's Adam

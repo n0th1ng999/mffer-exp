@@ -69,7 +69,7 @@ class ProxModel(keras.Model):
         mu, anchor = self.prox
         if training and mu:
             loss += 0.5 * mu * tf.add_n([tf.reduce_sum(tf.square(v - a))
-                                         for v, a in zip(self.trainable_weights, anchor)])
+                                         for v, a in zip(self.trainable_weights, anchor, strict=True)])
         return loss
 
 
