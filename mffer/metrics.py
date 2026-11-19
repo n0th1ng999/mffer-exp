@@ -56,9 +56,12 @@ def compute(table: pd.DataFrame) -> dict:
         ieo = table[table.displayed_level.isin(["LO", "MD", "HI"])]
         if len(ieo):
             level = ieo.displayed_level.map({"LO": 1, "MD": 2, "HI": 3})
+
+            def rho(x):   # undefined (None) for a constant predictor such as B0, not NaN: keeps JSON valid
+                return None if np.ptp(x) == 0 else float(spearmanr(x, level)[0])
             result["ieo_perceived_intensity_by_level"] = {
                 "mean_pred": {lv: float(g.mean()) for lv, g in ieo.groupby("displayed_level")["perceived_intensity_pred"]},
-                "spearman_pred_vs_level": float(spearmanr(ieo.perceived_intensity_pred, level)[0]),
-                "spearman_true_vs_level": float(spearmanr(ieo.perceived_intensity_true, level)[0]),
+                "spearman_pred_vs_level": rho(ieo.perceived_intensity_pred),
+                "spearman_true_vs_level": rho(ieo.perceived_intensity_true),
             }
     return result

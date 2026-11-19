@@ -153,6 +153,8 @@ def make_dataset(data: Cremad, rows: np.ndarray, spec: ModelSpec, stats: AudioSt
         return {**x, "video": tf.cast(x["video"], tf.float32) / 255.0}, y, w
 
     dataset = tf.data.Dataset.from_generator(batches, output_signature=(x_sig, y_sig, w_sig))
+    # Declared length: Keras then knows the epoch size and doesn't warn that the input "ran out of data".
+    dataset = dataset.apply(tf.data.experimental.assert_cardinality(-(-len(rows) // batch_size)))
     if spec.video:
         dataset = dataset.map(to_float, num_parallel_calls=tf.data.AUTOTUNE)
     return dataset.prefetch(2)
