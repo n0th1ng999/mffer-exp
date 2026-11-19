@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Run an experiment by its README ID.
+#   ./run c1          all splits the experiment uses (0 1 2, or 0 for D1–D4)
+#   ./run c1 0        only split 0
+#   ./run l1          local-only: both clients of every split (two trainings per split)
+#   ./run resume runs/<run-dir>    (federated or not, read from the run's config.yaml)
+# Uses the `mffer` conda environment; no need to activate it. Each run's output is shown and also
+# saved to runs/_logs/<id>-s<split>-<yyyymmdd-hhmm>.log.
+set -euo pipefail
+cd "$(dirname "$0")"
+export TF_CPP_MIN_LOG_LEVEL=1   # hide TensorFlow INFO lines; warnings and errors still show
+
+usage() {
+    echo "usage: ./run <experiment> [split ...]    e.g. ./run c1, ./run c2 0"
+    echo "       ./run resume runs/<run-dir>"
+    echo "experiments: b0 u1 u2 c1 c2 d1 d2 d3 d4 f1 f2 f3 f4 l1"
+    exit 2
+}
+
+if [[ "${CONDA_DEFAULT_ENV:-}" == mffer ]]; then
+    PY=python
+else
+    PY="$(conda info --base)/envs/mffer/bin/python"
+    [[ -x "$PY" ]] || { echo "conda environment 'mffer' not found (see README: Reproduce)"; exit 1; }
+fi
+
+[[ $# -ge 1 ]] || usage
+id="$(echo "$1" | tr '[:upper:]' '[:lower:]')"; shift
+mkdir -p runs/_logs
+
+if [[ "$id" == resume ]]; then
+    [[ $# -eq 1 && -d "$1" ]] || usage
+    module=mffer.train
+    grep -q '^federated:' "$1/config.yaml" && module=mffer.federated
+    exec "$PY" -u -m "$module" --resume "$1"
+fi
+
+module=mffer.train; clients=""
+case "$id" in
+    u1) config=u1_audio; splits="0 1 2" ;;
+    u2) config=u2_video; splits="0 1 2" ;;
+    c1) config=c1_m1;    splits="0 1 2" ;;
+    c2) config=c2_m3;    splits="0 1 2" ;;
+    d1|d2|d3|d4) config=$id; splits="0" ;;
+    f1) config=f1_iid;   splits="0 1 2"; module=mffer.federated ;;
+    f2) config=f2_actor; splits="0 1 2"; module=mffer.federated ;;
+    f3) config=f3_actor4; splits="0"; module=mffer.federated ;;
+    f4) config=f4_fedprox; splits="0"; module=mffer.federated ;;
+    l1) config=l1_local; splits="0 1 2"; clients="0 1" ;;
+    b0) "$PY" -m mffer.baselines && "$PY" scripts/render_results.py; exit ;;
+    s1) echo "$id is not implemented yet (see README: How to run)"; exit 1 ;;
+    *) echo "unknown experiment: $id"; usage ;;
+esac
+[[ $# -gt 0 ]] && splits="$*"
+
+for s in $splits; do
+    [[ "$s" =~ ^[012]$ ]] || { echo "split must be 0, 1 or 2, got: $s"; exit 2; }
+done
+for s in $splits; do
+  for c in ${clients:-none}; do
+    if [[ "$c" == none ]]; then tag="$id-s$s"; extra=(); else tag="$id-c$c-s$s"; extra=(--client "$c"); fi
+    log="runs/_logs/$tag-$(date +%Y%m%d-%H%M).log"
+    echo "== $tag  (log: $log)"
+    # The log keeps everything; the terminal drops TensorFlow's fixed startup INFO lines.
+    "$PY" -u -m "$module" "configs/runs/$config.yaml" --split "$s" ${extra[@]+"${extra[@]}"} 2>&1 | tee "$log" |
+        grep --line-buffered -v -e '^I0000 ' -e 'absl::InitializeLog'
+    "$PY" scripts/render_results.py   # refresh results.html
+  done
+done

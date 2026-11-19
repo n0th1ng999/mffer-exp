@@ -4,7 +4,7 @@ Module: `mffer/data/pipeline.py`. Status: **implemented 18 Nov**; invariants tes
 
 ## Job
 
-Turn "these clips, for this model configuration" into batches the Keras model can train or evaluate on:
+Turn "the clips", for this model configuration into batches the Keras model can train or evaluate on:
 `(inputs, targets, sample_weights)`. It is the only code that reads `cremad.h5` during training, and it is
 shared by the centralised trainer, the federated clients, local-only training and the baselines.
 

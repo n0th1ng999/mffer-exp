@@ -54,9 +54,10 @@ the paper's runs: `requirements-macos-arm64.lock`.
 
 ```bash
 conda activate mffer
-python -m mffer.train configs/runs/c1_m1.yaml --split 0   # one centralised run (see Conventions)
+./run c1 0                                                # one centralised run (see How to run)
 python scripts/timing_pilot.py --preset m3                # time per step on this machine
 python3 scripts/render_todo.py                            # refresh todo.html after editing TODO.md
+open results.html                                         # scores of every run (./run refreshes it)
 ```
 
 Paths are set once in `configs/paths.yaml` (dataset at `../data/CREMA-D`, outputs in `runs/`).
@@ -65,27 +66,188 @@ Paths are set once in `configs/paths.yaml` (dataset at `../data/CREMA-D`, output
 
 | Path | What | Status |
 |---|---|---|
+| `scripts/render_results.py` | `results.html`: scores per experiment (mean ± sd) and per run; click a run for interactive learning curves (hover, drag to zoom, expand, log scale), confusion matrices, per-class and per-sex scores, every epoch. Run by `./run` after each run | done |
+| `run` | One command per experiment: `./run c1`, `./run c2 0`, `./run resume …` (see How to run) | done |
 | `environment.yml` | Conda environment (macOS Metal / Linux CUDA) | done |
 | `requirements-macos-arm64.lock` | Exact package versions of the paper's runs | done |
 | `splits/` | The three frozen actor splits (versioned; never regenerated) | done |
 | `configs/paths.yaml` | Dataset and output paths | done |
-| `configs/runs/*.yaml` | One file per centralised configuration: C1, C2, U1, U2, D1–D4 | done (FL configs to do) |
+| `configs/runs/*.yaml` | One file per configuration: C1, C2, U1, U2, D1–D4, F1 (`f1_iid`), F2 (`f2_actor`), L1 (`l1_local`) | done (F3, F4 to do) |
 | `mffer/config.py` | Load paths and run configs | done |
 | `mffer/data/cremad.py` | Index CREMA-D: one row per clip with actor, sentence, labels, demographics | done (labels frozen 18 Nov) |
 | `mffer/data/splits.py` | Actor-grouped, sex-stratified train/val/test splits, saved as JSON | done |
 | `mffer/data/features.py` | MFCC and frame extraction → HDF5 | done |
 | `mffer/data/pipeline.py` | `tf.data` input pipeline from HDF5 + split ([design](docs/pipeline-design.md)) | done |
-| `tests/` | Invariant tests for splits and pipeline: `python -m pytest -q tests` | done |
+| `tests/` | Invariant tests for splits, pipeline, metrics, reporter and FedProx: `python -m pytest -q tests` | done (24 tests) |
 | `scripts/timing_pilot.py` | Time per training step and per batch read on real data | done |
 | `mffer/models.py` | Model builder: M1, M3 and the ladder variants from config flags | done |
-| `mffer/train.py` | Centralised training, early stopping, checkpoints, resume, test once | written, not yet run |
-| `mffer/federated.py` | Flower simulation (FL-IID, FL-non-IID) and local-only training | to do |
+| `mffer/train.py` | Centralised training, early stopping, checkpoints, resume, test once; local-only mode (`--client k`) | done; ran end to end (C1, U1 ×3) |
+| `mffer/federated.py` | Flower simulation (FL-IID, FL-non-IID): FedAvg, val per round, early stopping, resume, test once | done 19 Nov; checked on small models |
 | `mffer/metrics.py` | Accuracy, macro-F1, MAE, per-sex breakdown, IEO intensity-ordering check, from `predictions.csv` | done |
-| `mffer/report.py` | Results ledger, paper tables and figures from run directories | to do |
+| `mffer/baselines.py` | B0: majority class / train mean per head, written as normal run directories | done 19 Nov |
+| `mffer/report.py` | Results ledger, paper tables (`generated/tab-*.tex`) and learning-curve figure, from run directories only | done 19 Nov |
 | `scripts/smoke_test.py` | Environment check on random tensors | done |
 | `notebooks/eda.ipynb` | Exploratory analysis of CREMA-D: labels, masks, splits, baselines (kernel *Python (mffer)*) | done |
 | `TODO.md`, `todo.html` | Task list (source) and its browser view; refresh with `python3 scripts/render_todo.py` | done |
 | `runs/` | One directory per run (git-ignored) | — |
+
+## Experiments
+
+Every experiment answers one question, and every one is scored the same way: on the **test actors of the
+same split**, once, at the epoch (or round) chosen on validation. "×3" means the three frozen actor splits
+(`splits/split_{0,1,2}.json`), reported as mean ± sd.
+
+### Shared protocol
+
+| Item | Value (identical for every experiment) |
+|---|---|
+| Inputs | Audio: 13 MFCCs × 100 frames (4 s), train-split normalisation. Video: 10 frames, 224×224 RGB. Text: one-hot sentence ID. Demographics: scaled age + sex |
+| Outputs (5 heads) | Displayed emotion (6, softmax), perceived emotion (6, softmax), displayed valence (3, softmax), displayed intensity (sigmoid, MSE, IEO clips only), perceived intensity (sigmoid, MSE) |
+| Loss weights | 1.0 for the three classification heads, 0.2 for each intensity head; masked heads divided by label coverage |
+| Optimiser | Adam, learning rate 1e-4, batch 16, float32 |
+| Device | **CPU only.** On the Metal GPU (tensorflow-metal 1.2.0, TF 2.18 and 2.19) the same code, data and seed diverge after 3–4 epochs; on the CPU they train cleanly (`scripts/lab_stability.py`). `mffer.train` hides the GPU; `meta.json` records `"gpu": []` |
+| Budget | At most 90 epochs (or rounds; raised from 30 on 18 Nov, when best epochs landed at 25–29); early stopping with patience 5 on val displayed-emotion accuracy |
+| Seed | Weight-initialisation seed = split id (overridable with `--seed`) |
+| Metrics | Accuracy and macro-F1 per classification head; MAE per intensity head against the constant predictor; accuracy by sex; IEO ordering check (perceived intensity rises LO → MD → HI); parameters, minutes per epoch, FL update size (parameters × 4 bytes) |
+| Output | One run directory `runs/<config>-s<split>-<yyyymmdd-hhmm>/`: config, split, seed, git hash, hardware, `epochs.csv`, checkpoints, test predictions and metrics |
+
+### Model building blocks
+
+All models come from `build_model` in `mffer/models.py`; a configuration is a preset of flags, so two
+configurations differ only by the flags they declare.
+
+- **Audio encoder:** Conv1D(64, 5) + BatchNorm → global average pooling → Dense 64.
+- **Simple visual encoder (M1):** per frame Conv2D(16, 3, stride 2) → MaxPool 4 → global average pooling;
+  then LSTM(32) over the 10 frames.
+- **Deep visual encoder:** per frame 3 × [Conv2D(32/64/128, 3) + BatchNorm + MaxPool 2] → global average
+  pooling; then BiLSTM(64) → Dense 128.
+- **Modality gating:** each encoding (audio, visual, and text when present) is multiplied by a learned
+  scalar in (0, 1) computed from that encoding.
+- **Text branch:** Dense 64 + Dropout 0.2 on the sentence one-hot; joins the acoustic group.
+- **Demographics branch:** Dense 32 + Dropout 0.2 on age and sex; joins both groups.
+- **Fusion:** *concatenation* of the audio and visual encodings, or, once text or demographics are present,
+  *hierarchical* fusion: an acoustic group (audio + text + demographics) and a visual group (visual +
+  demographics), each through Dense 128 + Dropout 0.3, then concatenated. With audio and video alone the
+  hierarchical form reduces to concatenation, so it enters together with those modalities.
+- **Shared trunk and heads:** Dense 256 + Dropout 0.4 → Dense 128 → the five heads.
+
+### Baselines — what does the task give for free?
+
+| ID | Experiment | Detail | Splits |
+|---|---|---|---|
+| **B0** | Majority class and constant predictor | No training, no inputs (not a learned model such as k-NN). For each classification head, predict the most frequent train-split class; for each intensity head, predict the train-split mean. Sets the floor every model must beat (e.g. split 0 test: displayed emotion 17.1%, perceived 26.3%, valence 68.3%, perceived-intensity MAE 0.090). The perceived-intensity head is kept in the paper only if models beat its constant predictor | ×3 |
+| **U1** | Audio-only | Audio encoder → shared trunk → heads (preset `audio_only`). How far the voice alone goes; cheap, since no video is read | ×3 |
+| **U2** | Video-only | Simple visual encoder → shared trunk → heads (preset `video_only`). How far the face alone goes | ×3 |
+
+### Centralised models — does multimodal multi-task learning work on unseen actors?
+
+| ID | Experiment | Detail | Splits |
+|---|---|---|---|
+| **C1** | M1: audio-visual baseline | Audio encoder + simple visual encoder, concatenation fusion (preset `m1`). The reference audio-visual model | ×3 |
+| **C2** | M3: full model | Audio encoder + deep visual encoder, gating, text and demographics, hierarchical fusion (preset `m3`). The model the paper proposes; also the model used for all federated experiments | ×3 |
+
+### Design ladder — which design choice contributes what?
+
+From M1 to M3 one change at a time, each step trained with the same budget, so a difference between two
+neighbouring steps is attributable to that one change.
+
+| ID | Step | Change from the previous step | Splits |
+|---|---|---|---|
+| **D1** | M1 + deeper visual encoder | Simple → deep visual encoder (preset `d1`) | 1 |
+| **D2** | D1 + modality gating | Gates on the audio and visual encodings (preset `d2`) | 1 |
+| **D3** | D2 + demographics | Adds age and sex, which switches fusion to hierarchical (preset `d3`) | 1 |
+| **D4** | D2 + text | Adds the sentence ID to the acoustic group, hierarchical fusion, no demographics (preset `d4`). Text carries no emotional content in CREMA-D; this measures what the sentence identity alone adds | 1 |
+| (C2) | D2 + text + demographics | The full M3, already run as C2 | — |
+
+### Federated and local-only — what does keeping data on the kiosk cost?
+
+All on the M3 model, the same test actors as C2, and equal compute: one round is one local epoch on every
+client, i.e. one pass over all training data, so 90 rounds match 90 centralised epochs. The server scores
+the global model on val after every round; test is scored once, at the val-selected round. Audio normalisation
+statistics are computed per client (raw data never leaves it); the server pools the clients' 26 summary
+numbers exactly to score the global model. Each client also compensates loss weights with its own label
+coverage. Clients keep no state between rounds: each round starts from the global weights with a fresh
+Adam (standard FedAvg; centralised training keeps Adam's moments across epochs, so this is part of the
+"cost of federation"). The global model starts from the same initial weights as C2 (same seed). Clients
+run one at a time in one Flower simulation (`mffer/federated.py`); a round in which any client fails, or
+sees a GPU, stops the run instead of averaging the survivors. Client k of F2 and local-only client k of L1
+hold the same rows (`splits.client_rows`, seed = split id; tested).
+
+| ID | Experiment | Detail | Splits |
+|---|---|---|---|
+| **F1** | FL-IID | 2 clients; training clips dealt round-robin within the train actors, so both clients see every actor. FedAvg weighted by client size. The gap to C2 is the cost of federation alone | ×3 |
+| **F2** | FL-non-IID | 2 clients, each holding different train actors (the realistic kiosk case: each kiosk sees its own customers). The gap to F1 is the cost of heterogeneous clients | ×3 |
+| **L1** | Local-only | Each F2 client trains alone on its own actors, no aggregation; each model scored on the same val and test actors. Shows whether federating beats not collaborating at all (two trainings per split, reported as the mean of the two clients). Same trainer as the centralised runs (`mffer.train --client k`), restricted to that client's rows | ×3 |
+| **F3** | More clients | Like F2 with 4 actor-partitioned clients (about 16 train actors each): does the gap grow as each client holds fewer actors? | 1 |
+| **F4** | FedProx | F2 with FedProx: each client adds (μ/2)·‖w − w_global‖² to its training loss, so it drifts less from the global model during its local epoch; aggregation stays FedAvg. μ = 0.01 (common default, not tuned). Tests whether a method designed for heterogeneous clients helps the kiosk case; with 2 clients and 1 local epoch drift is small, so a null result is likely and still reportable | 1 |
+
+### Label variant
+
+| ID | Experiment | Detail | Splits |
+|---|---|---|---|
+| **S1** | Soft perceived-emotion labels | C2 with the perceived-emotion head trained on the rating distribution instead of the majority vote (tied clips no longer masked) | 1 |
+
+### How to run
+
+From the repository root, one command per experiment, using the README IDs. No need to activate conda:
+`./run` uses the `mffer` environment itself.
+
+```bash
+./run b0        # B0 majority class / constant predictor, splits 0, 1, 2 (seconds)
+./run u1        # U1 audio-only, splits 0, 1, 2
+./run u2        # U2 video-only, splits 0, 1, 2
+./run c1        # C1 M1, splits 0, 1, 2 (up to ~1.2 h each on the CPU)
+./run c2        # C2 M3, splits 0, 1, 2 (up to ~9.5 h each on the CPU; early stopping usually ends it sooner)
+./run d1        # D1 (likewise d2, d3, d4), split 0 only
+./run f1        # F1 FL-IID, splits 0, 1, 2 (M3; a round costs about one C2 epoch)
+./run f2        # F2 FL-non-IID, splits 0, 1, 2
+./run l1        # L1 local-only: clients 0 and 1 of every split (six trainings)
+./run f3        # F3 FL-non-IID with 4 clients, split 0
+./run f4        # F4 FedProx (F2 + proximal term, mu 0.01), split 0
+```
+
+After runs land, regenerate the paper's numbers (writes `../mffer-worldcist27/notes/results-ledger.md`,
+`generated/tab-{main,ladder,federated,sex}.tex` and `generated/fig-curves.pdf`; only counted runs, i.e.
+the latest finished CPU run per configuration and split):
+
+```bash
+conda run -n mffer python -m mffer.report
+```
+
+| Variant | Effect |
+|---|---|
+| `./run c2 0` | Only split 0 (any of 0, 1, 2; several allowed: `./run c2 1 2`) |
+| `./run resume runs/<run-dir>` | Continue an interrupted run (centralised or federated) from its last epoch or round; a finished run is only re-scored |
+| `./run l1 0` | L1 on split 0 only (both clients). One client: `python -m mffer.train configs/runs/l1_local.yaml --split 0 --client 1` |
+
+Each run creates `runs/<config>-s<split>-<yyyymmdd-hhmm>/`, prints the test metrics at the end and saves
+its terminal output to `runs/_logs/<id>-s<split>-<yyyymmdd-hhmm>.log`. Closing the terminal stops the run;
+continue it with `./run resume`. (`./run` calls `python -m mffer.train <config> --split <n>`, which also
+takes `--seed N` for seed-variance checks; paper runs use the default seed = split id.)
+
+Not runnable yet (no code); the command goes here once it exists:
+
+| ID | Missing piece |
+|---|---|
+| S1 | Soft perceived-emotion targets in `mffer.data` and a config |
+
+### Implementation status
+
+Updated by hand as runs land; the full task list with dates is `TODO.md`.
+
+| ID | Code | Config | Runs done | Notes |
+|---|---|---|---|---|
+| B0 | ready (`mffer.baselines`, 19 Nov) | — | 3 / 3 | `runs/b0_majority-s{0,1,2}-20261119-*`: displayed 17.1%, perceived 26.9% ± 0.6, valence 68.3%, perceived-intensity MAE 0.088 ± 0.002, displayed-intensity MAE 0.222 |
+| U1 | ready (`mffer.train`) | `u1_audio.yaml` | 3 / 3 | CPU, 90-epoch limit, 18 Nov (`runs/u1_audio-s{0,1,2}-20261118-{2016,2016,2017}`): test displayed acc 52.5% ± 0.5, perceived 52.7%, valence 72.8%, perceived-intensity MAE 0.083. Stopped by patience at epochs 30, 43, 33. 30-epoch and GPU runs superseded |
+| U2 | ready | `u2_video.yaml` | 0 / 3 | |
+| C1 | ready | `c1_m1.yaml` | 3 / 3 | CPU, 18 Nov (`runs/c1_m1-s{0,1,2}-20261118-{1901,1924,1946}`, 15–22 min each): test displayed acc 51.5% ± 1.8, perceived 51.6%, valence 72.1%, MAE 0.084. ≈ U1: the simple visual encoder adds nothing. Older GPU run is invalid |
+| C2 | ready | `c2_m3.yaml` | 0 / 3 | |
+| D1–D4 | ready | `d1.yaml` … `d4.yaml` | 0 / 1 each | |
+| F1, F2 | ready (`mffer.federated`, 19 Nov) | `f1_iid.yaml`, `f2_actor.yaml` | 0 / 3 each | Checked end to end on real data with small models (audio-only: 3 rounds, resume, injected client crash fails the run; early stop at round 6 then re-score on resume; M1: 2 rounds ≈ 55 s/round vs 48 s/epoch centralised) |
+| L1 | ready (`mffer.train --client k`, 19 Nov) | `l1_local.yaml` | 0 / 3 (×2 clients) | Checked end to end with an audio-only smoke config |
+| F3 | ready | `f3_actor4.yaml` (4 clients) | 0 / 1 | |
+| F4 | ready (`ProxModel` in `mffer.federated`, 19 Nov) | `f4_fedprox.yaml` (μ 0.01) | 0 / 1 | Tested: μ = 0 trains identically to FedAvg; larger μ drifts less; eval loss excludes the term; Flower smoke run on audio-only |
+| S1 | to do (soft-label targets in `mffer.data`) | to do | 0 | |
 
 ---
 
@@ -125,7 +287,7 @@ flowchart TB
         PREP["<b>Data preparation</b><br/>python -m mffer.data.*<br/>index, labels, features, splits"]
         DS[("<b>Dataset store</b><br/>../data/processed: clips.csv, cremad.h5<br/>+ splits/split_{0,1,2}.json (in repo)")]
         TRAIN["<b>Centralised trainer</b><br/>python -m mffer.train<br/>configs/runs/*.yaml"]
-        FED["<b>Federated simulator</b><br/>python -m mffer.federated<br/>Flower server + clients,<br/>local-only mode"]
+        FED["<b>Federated simulator</b><br/>python -m mffer.federated<br/>Flower server + clients"]
         RUNS[("<b>Run store</b><br/>runs/&lt;run_id&gt;/<br/>config, epochs.csv,<br/>checkpoint, test.json")]
         REP["<b>Reporter</b><br/>python -m mffer.report<br/>ledger, tables, figures"]
     end
@@ -142,8 +304,8 @@ flowchart TB
 |---|---|---|
 | Data preparation | Python, pandas, librosa, ffmpeg/OpenCV, h5py | Build the clip index and labels, extract MFCCs and 10 frames per clip, write frozen splits |
 | Dataset store | HDF5 (uint8 frames, one clip per chunk), CSV, JSON | Single source of inputs and splits for every run |
-| Centralised trainer | TensorFlow 2.19 / Keras, tensorflow-metal | Train one configuration on one split; early stopping on val; score test once |
-| Federated simulator | Flower (`flwr`), same Keras model | FedAvg over N clients (IID or by actor); server evaluates the global model on val each round, test once; local-only baseline |
+| Centralised trainer | TensorFlow 2.19 / Keras (CPU) | Train one configuration on one split; early stopping on val; score test once. Local-only mode (L1): the same on one federated client's rows |
+| Federated simulator | Flower (`flwr`), same Keras model | FedAvg over N clients (IID or by actor); server evaluates the global model on val each round, test once |
 | Run store | Files | Everything needed to trace a number: config, split, seed, git hash, hardware, per-epoch CSV, test metrics |
 | Reporter | pandas, matplotlib | Results ledger and the paper's tables/figures, generated only from the run store |
 
@@ -160,8 +322,8 @@ flowchart LR
     CFG["config<br/>paths + run YAML"]
     MD["models<br/>build_model(flags):<br/>branches, gating,<br/>fusion, 5 heads, losses"]
     MT["metrics<br/>acc, macro-F1, MAE,<br/>baselines, per-sex"]
-    TR["train<br/>fit, early stop,<br/>checkpoint, test once"]
-    FD["federated<br/>Flower client, FedAvg,<br/>server eval, local-only"]
+    TR["train<br/>fit, early stop,<br/>checkpoint, test once,<br/>local-only mode"]
+    FD["federated<br/>Flower client, FedAvg,<br/>server eval"]
     RP["report<br/>ledger, tables, figures"]
 
     CR --> FE
@@ -195,8 +357,8 @@ above; the model graph is in `mffer/models.py` (`build_model`), and its M3 form 
 ## Conventions
 
 - **Run ID:** `<config>-s<split>-<yyyymmdd-hhmm>`, e.g. `c2_m3-s1-20261122-2310`.
-- **Long runs:** `caffeinate -i python -m mffer.train configs/runs/c2_m3.yaml --split 1`. Each epoch is
-  checkpointed, so a crash costs one epoch.
+- **Long runs:** `caffeinate -i ./run c2 1` keeps the Mac awake. Each epoch is checkpointed, so a crash
+  costs one epoch (`./run resume runs/<run-dir>`).
 - **Nothing in the paper is typed by hand:** tables and figures come from `mffer.report`.
 - **Anonymity:** no link to this repository in the submitted paper.
 
