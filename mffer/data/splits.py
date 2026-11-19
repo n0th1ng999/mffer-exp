@@ -67,6 +67,12 @@ def partition(clips: pd.DataFrame, train_rows: np.ndarray, n_clients: int, mode:
     raise ValueError(f"unknown partition mode: {mode}")
 
 
+def client_rows(clips: pd.DataFrame, split_id: int, n_clients: int, mode: str) -> list[np.ndarray]:
+    """The training rows of each client of `split_id`. The one place a client's data is defined, so a
+    local-only client (L1) holds exactly the rows of the same federated client (F2): seed = split id."""
+    return partition(clips, rows(clips, split_id, "train"), n_clients, mode, seed=split_id)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args()

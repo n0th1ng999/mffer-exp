@@ -1,5 +1,5 @@
 # U1: audio-only baseline
-# Training protocol (max_epochs 30, patience 5, monitor val_displayed_emotion_accuracy,
+# Training protocol (max_epochs 90, patience 5, monitor val_displayed_emotion_accuracy,
 # batch 16) comes from mffer.train.DEFAULTS and is identical for every configuration.
 name: u1_audio
 model:

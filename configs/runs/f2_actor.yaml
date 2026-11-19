@@ -1,0 +1,10 @@
+# F2: FL-non-IID. M3, 2 clients, each holding different train actors (sex-balanced), FedAvg.
+# One round = one local epoch per client; rounds follow the same budget and stopping rule as epochs.
+# Training protocol (max_epochs 90, patience 5, monitor val_displayed_emotion_accuracy,
+# batch 16) comes from mffer.train.DEFAULTS and is identical for every configuration.
+name: f2_actor
+model:
+  preset: m3
+federated:
+  clients: 2
+  partition: actor

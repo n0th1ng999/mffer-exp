@@ -1,0 +1,12 @@
+# F4: FedProx. Exactly F2 (M3, 2 actor-partitioned clients) but each client adds (mu/2)·||w - w_global||²
+# to its training loss, so it drifts less from the global model during its local epoch. Aggregation is
+# still FedAvg. mu = 0.01, the common default (not tuned: tuning would need extra runs on val).
+# Training protocol (max_epochs 90, patience 5, monitor val_displayed_emotion_accuracy,
+# batch 16) comes from mffer.train.DEFAULTS and is identical for every configuration.
+name: f4_fedprox
+model:
+  preset: m3
+federated:
+  clients: 2
+  partition: actor
+  mu: 0.01

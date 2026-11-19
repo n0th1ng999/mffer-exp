@@ -143,7 +143,11 @@ def build_model(spec: ModelSpec, coverage: dict[str, float] | None = None) -> ke
 
     outputs = {name: layers.Dense(HEADS[name][0], activation=HEADS[name][1], name=name)(shared)
                for name in spec.heads}
-    model = keras.Model(inputs, outputs, name="mffer")
+    return compile_model(keras.Model(inputs, outputs, name="mffer"), spec, coverage)
+
+
+def compile_model(model: keras.Model, spec: ModelSpec, coverage: dict[str, float] | None = None) -> keras.Model:
+    """(Re)compile with a fresh Adam. Federated clients call this every round, with their own coverage."""
     model.compile(
         optimizer=keras.optimizers.Adam(1e-4),
         loss={name: HEADS[name][2] for name in spec.heads},

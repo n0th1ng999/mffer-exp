@@ -91,3 +91,13 @@ def test_keras_trains_on_the_dataset_with_masked_heads(data):
     history = model.fit(make_dataset(data, train, spec, stats, training=True), epochs=1, verbose=0)
     assert np.isfinite(history.history["loss"][0])
     assert "displayed_intensity_mae" in history.history
+
+
+@pytest.mark.parametrize("split_id", [0, 1, 2])
+def test_local_only_client_holds_the_rows_of_the_same_federated_client(data, split_id):
+    """L1 client k (mffer.train --client k) and F2 client k (mffer.federated) must train on the same rows."""
+    from mffer.data.splits import client_rows
+    train = rows(data.clips, split_id, "train")
+    federated = partition(data.clips, train, n_clients=2, mode="actor", seed=split_id)
+    local = client_rows(data.clips, split_id, 2, "actor")
+    assert all(np.array_equal(f, l) for f, l in zip(federated, local))

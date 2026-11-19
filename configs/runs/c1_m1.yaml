@@ -1,5 +1,5 @@
 # C1: M1 audio-visual baseline, concatenation fusion
-# Training protocol (max_epochs 30, patience 5, monitor val_displayed_emotion_accuracy,
+# Training protocol (max_epochs 90, patience 5, monitor val_displayed_emotion_accuracy,
 # batch 16) comes from mffer.train.DEFAULTS and is identical for every configuration.
 name: c1_m1
 model:
