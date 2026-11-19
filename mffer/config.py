@@ -12,6 +12,7 @@ class Paths:
     raw: Path
     processed: Path
     runs: Path
+    paper: Path
 
     @property
     def splits(self) -> Path:

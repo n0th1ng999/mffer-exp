@@ -2,3 +2,4 @@
 raw: ../data/CREMA-D          # git clone of CheyneyComputerScience/CREMA-D
 processed: ../data/processed  # clips.csv, cremad.h5, splits/
 runs: runs                    # one directory per run
+paper: ../mffer-worldcist27   # LaTeX project; mffer.report writes into it
