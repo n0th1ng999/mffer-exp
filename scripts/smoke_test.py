@@ -64,7 +64,7 @@ def check_flower() -> None:
     class Client(NumPyClient):
         def __init__(self):
             self.model = tiny_model()
-            rng = np.random.default_rng()
+            rng = np.random.default_rng(0)
             self.x = rng.random((32, 4), dtype=np.float32)
             self.y = np.eye(2, dtype=np.float32)[rng.integers(0, 2, 32)]
 

@@ -35,9 +35,21 @@ from mffer.config import ROOT, load_paths, load_run_config
 from mffer.data.pipeline import AudioStats, Cremad, fit_stats, label_coverage, make_dataset
 from mffer.data.splits import client_rows, rows
 from mffer.metrics import MONITOR, compute, predictions_table
-from mffer.models import build_model, spec_from_config
+from mffer.models import build_model, derive_seed, reseed, spec_from_config
 
 DEFAULTS = {"max_epochs": 90, "patience": 5, "monitor": MONITOR, "batch_size": 16}
+
+
+class Reseed(keras.callbacks.Callback):
+    """Dropout state from (seed, epoch) at the start of every epoch, so a resumed run trains exactly as an
+    uninterrupted one (ADR 0016). `epoch` is absolute: Keras counts from `initial_epoch`."""
+
+    def __init__(self, seed: int):
+        super().__init__()
+        self.seed = seed
+
+    def on_epoch_begin(self, epoch, logs=None):
+        reseed(self.model, derive_seed(self.seed, epoch))
 
 
 class EpochCheckpoint(keras.callbacks.Callback):
@@ -85,7 +97,8 @@ def new_run(config_file: Path, split_id: int, seed: int | None, client: int | No
     meta = {"config_file": str(config_file), "split": split_id, "seed": split_id if seed is None else seed,
             "git": git_version(), "tensorflow": tf.__version__, "keras": keras.__version__,
             "machine": f"{platform.platform()} {platform.processor()}",
-            "device": device.current(), "gpu": device.names(), "started": datetime.now().isoformat()}
+            "device": device.current(), "gpu": device.names(), "deterministic": device.deterministic(),
+            "started": datetime.now().isoformat()}
     (run_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=1))
     return run_dir
@@ -125,10 +138,10 @@ def run(run_dir: Path) -> dict:
     if not done:
         start = time.perf_counter()
         model.fit(make_dataset(data, train, spec, stats, training=True, seed=meta["seed"],
-                               batch_size=config["batch_size"]),
+                               batch_size=config["batch_size"], first_epoch=len(history)),
                   validation_data=make_dataset(data, val, spec, stats, training=False),
                   epochs=config["max_epochs"], initial_epoch=len(history), verbose=2, shuffle=False,  # pipeline shuffles
-                  callbacks=[keras.callbacks.CSVLogger(log_file, append=True), checkpoint])
+                  callbacks=[Reseed(meta["seed"]), keras.callbacks.CSVLogger(log_file, append=True), checkpoint])
         meta["train_minutes"] = meta.get("train_minutes", 0) + (time.perf_counter() - start) / 60
 
     return score_test(run_dir, model, data, test, spec, stats, checkpoint.best_epoch, meta)

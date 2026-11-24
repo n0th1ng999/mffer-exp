@@ -41,7 +41,7 @@ from mffer import device
 from mffer.config import load_run_config
 from mffer.data.pipeline import AudioStats, Cremad, fit_stats, label_coverage, make_dataset
 from mffer.data.splits import client_rows, rows
-from mffer.models import build_model, compile_model, spec_from_config
+from mffer.models import build_model, compile_model, derive_seed, reseed, spec_from_config
 from mffer.train import DEFAULTS, new_run, print_test, score_test
 
 # ---------------------------------------------------------------- client (runs in a Flower/Ray worker)
@@ -91,8 +91,9 @@ def client_fit(run_dir: Path, client: int, parameters: list[np.ndarray], round_:
     compile_model(model, spec, label_coverage(data, own, spec))   # fresh Adam every round
     if isinstance(model, ProxModel):   # anchor = this round's global weights, trainable ones only
         model.set_anchor(fed["mu"], [w.numpy() for w in model.trainable_weights])
-    seed = int(np.random.SeedSequence([meta["seed"], client, round_]).generate_state(1)[0])
-    keras.utils.set_random_seed(seed)   # dropout, so a rerun with the same seed reproduces
+    seed = derive_seed(meta["seed"], client, round_)
+    keras.utils.set_random_seed(seed)
+    reseed(model, seed)   # dropout from (seed, client, round) only, whichever worker process runs it (ADR 0016)
     history = model.fit(make_dataset(data, own, spec, stats, training=True, seed=seed,
                                      batch_size=config["batch_size"]),
                         epochs=1, verbose=0, shuffle=False)
@@ -100,7 +101,7 @@ def client_fit(run_dir: Path, client: int, parameters: list[np.ndarray], round_:
     metrics = {k: float(v[-1]) for k, v in history.history.items()}
     print(f"round {round_} client {client}: {len(own)} clips, loss {metrics['loss']:.3f}, {seconds:.0f} s",
           flush=True)
-    return model.get_weights(), len(own), {**metrics, "seconds": seconds,
+    return model.get_weights(), len(own), {**metrics, "seconds": seconds, "client": client,
                                             "device": device.current()}
 
 
@@ -178,13 +179,15 @@ def make_strategy(log: RoundLog, n_clients: int, initial: list[np.ndarray], expe
                 first = str(failures[0])[-300:] if failures else ""   # Ray's full trace is printed above
                 raise RuntimeError(f"round {server_round}: {len(results)} of {n_clients} clients reported; "
                                    f"{len(failures)} failed: ...{first}")
+            # Client order, not arrival order: FedAvg's float sums then add up in the same order every run.
+            results = sorted(results, key=lambda result: result[1].metrics["client"])
             metrics = [(r.num_examples, r.metrics) for _, r in results]
             devices = [m["device"] for _, m in metrics]
             if set(devices) != {expected_device}:
                 raise RuntimeError(f"clients trained on {devices}, the run uses {expected_device}")
             n = sum(k for k, _ in metrics)
             log.train_metrics = {key: sum(k * m[key] for k, m in metrics) / n
-                                 for key in metrics[0][1] if key not in ("device", "seconds")}
+                                 for key in metrics[0][1] if key not in ("device", "seconds", "client")}
             log.train_metrics["client_seconds"] = sum(m["seconds"] for _, m in metrics)
             return super().aggregate_fit(server_round, results, failures)
 

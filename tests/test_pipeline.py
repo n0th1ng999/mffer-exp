@@ -86,6 +86,18 @@ def test_training_order_is_reshuffled_each_epoch_but_reproducible(data):
     assert np.array_equal(epoch0, again) and not np.array_equal(epoch0, epoch1)
 
 
+def test_a_resumed_dataset_continues_the_shuffle_of_an_uninterrupted_one(data):
+    some = rows(data.clips, 0, "train")[:64]
+    stats = fit_stats(data, some)
+    def first(ds):
+        return next(iter(ds))[1]["displayed_emotion"].numpy()
+
+    uninterrupted = make_dataset(data, some, PRESETS["m1"], stats, training=True, seed=7)
+    epochs = [first(uninterrupted) for _ in range(3)]
+    resumed = make_dataset(data, some, PRESETS["m1"], stats, training=True, seed=7, first_epoch=2)
+    assert np.array_equal(first(resumed), epochs[2])
+
+
 def test_keras_trains_on_the_dataset_with_masked_heads(data):
     train = rows(data.clips, 0, "train")[:32]
     stats = fit_stats(data, train)

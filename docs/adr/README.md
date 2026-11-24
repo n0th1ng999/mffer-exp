@@ -26,4 +26,5 @@ Rules:
 | [0012](0012-fedprox-untuned-mu.md) | FedProx with μ = 0.01, not tuned | Accepted, 19 Nov 2026 |
 | [0013](0013-lint-no-formatter.md) | Lint with ruff, no auto-formatter; hooks outside the experiment env | Accepted, 19 Nov 2026 |
 | [0014](0014-primary-metric-valence-f1.md) | Primary metric valence macro-F1, then displayed and perceived intensity MAE; it picks the epoch | Accepted, 19 Nov 2026 |
-| [0015](0015-cuda-allowed-metal-not.md) | Train on CUDA where available; Metal stays hidden; device recorded and checked | Accepted, 19 Nov 2026 (CUDA check pending) |
+| [0015](0015-cuda-allowed-metal-not.md) | Train on CUDA where available; Metal stays hidden; device recorded and checked | Accepted, 19 Nov 2026; CUDA checked 20 Nov; non-determinism superseded by 0016 |
+| [0016](0016-deterministic-ops.md) | Every run is deterministic: op determinism, explicit dropout seeds, exact resume, ordered FedAvg | Accepted, 20 Nov 2026 |

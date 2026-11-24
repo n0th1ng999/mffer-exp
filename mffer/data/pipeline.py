@@ -123,11 +123,12 @@ def _inputs(data: Cremad, rows: np.ndarray, spec: ModelSpec, stats: AudioStats) 
 
 
 def make_dataset(data: Cremad, rows: np.ndarray, spec: ModelSpec, stats: AudioStats, *,
-                 training: bool, seed: int = 0, batch_size: int = 16) -> tf.data.Dataset:
-    """Batches of (inputs, targets, sample_weights). Training: reshuffled each epoch with seed + epoch.
-    Evaluation: in `rows` order, last batch may be smaller."""
+                 training: bool, seed: int = 0, batch_size: int = 16, first_epoch: int = 0) -> tf.data.Dataset:
+    """Batches of (inputs, targets, sample_weights). Training: reshuffled each epoch with seed + epoch,
+    counting from `first_epoch` (a resumed run passes the epochs already done, so it shuffles as an
+    uninterrupted run would). Evaluation: in `rows` order, last batch may be smaller."""
     rows = np.asarray(rows)
-    epochs = count()
+    epochs = count(first_epoch)
 
     def batches():
         order = np.random.default_rng(seed + next(epochs)).permutation(rows) if training else rows

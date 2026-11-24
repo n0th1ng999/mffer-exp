@@ -6,6 +6,7 @@ flags say. Layer sizes follow Table 1 of the paper draft.
 from dataclasses import dataclass, field, replace
 
 import keras
+import numpy as np
 from keras import layers
 
 N_EMOTIONS = 6
@@ -158,6 +159,22 @@ def compile_model(model: keras.Model, spec: ModelSpec, coverage: dict[str, float
                           if HEADS[name][2] != "mse" else ["mae"] for name in spec.heads},
     )
     return model
+
+
+def derive_seed(*parts: int) -> int:
+    """A 32-bit seed from integers (e.g. run seed, epoch): the one rule for every derived seed (ADR 0016)."""
+    return int(np.random.SeedSequence([int(p) for p in parts]).generate_state(1)[0])
+
+
+def reseed(model: keras.Model, seed: int) -> None:
+    """Set every random layer's (dropout's) state from `seed`. Each layer keeps its own seed generator that
+    advances with every step and is rebuilt when a model is loaded, so without this the masks of an epoch
+    (or round) would depend on what ran earlier in the process: a resumed run would differ from an
+    uninterrupted one, and a federated client from a fresh worker process (ADR 0016)."""
+    generators = [g for layer in model._flatten_layers(include_self=False)
+                  for g in getattr(layer, "_seed_generators", [])]
+    for i, generator in enumerate(generators):
+        generator.state.assign(keras.ops.convert_to_tensor([derive_seed(seed, i), 0], generator.state.dtype))
 
 
 def spec_from_config(model_config: dict) -> ModelSpec:

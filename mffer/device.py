@@ -7,15 +7,21 @@
 
 Every run records its device in meta.json (`device`: cpu | cuda | metal); the reporter never counts metal,
 and a run must be resumed on the device it started on.
+
+Op determinism is always on (ADR 0016): the same code, data, seed, device and software give bit-identical
+weights, on the CPU and on CUDA. It does not make CPU and CUDA (or two different CPUs) agree bit for bit.
 """
 import os
 import sys
 
 import tensorflow as tf
+from tensorflow.python.framework import config as tf_config  # TF 2.19 has only the setter in tf.config
 
 
 def configure() -> str:
     """Apply the policy. Call before TensorFlow uses a device in this process; returns `current()`."""
+    # Deterministic kernels (cuDNN, reductions, tf.data); an op without one raises instead of running.
+    tf.config.experimental.enable_op_determinism()
     gpus = tf.config.list_physical_devices("GPU")
     try:
         if sys.platform == "darwin" or os.environ.get("MFFER_CPU") == "1":
@@ -26,6 +32,10 @@ def configure() -> str:
     except RuntimeError:   # devices already initialised in this process: current() reports what is in use
         pass
     return current()
+
+
+def deterministic() -> bool:
+    return tf_config.is_op_determinism_enabled()
 
 
 def current() -> str:

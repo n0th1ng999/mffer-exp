@@ -44,12 +44,16 @@ python -m pytest -q tests                  # invariants: splits, masks, normalis
 ### Linux or Windows (WSL2) with an NVIDIA GPU
 
 Everything above applies; these steps come first. On Windows all of it runs inside WSL2 (Ubuntu), never in
-PowerShell. Not yet tried on such a machine: the first run there is the check at the end of this section.
+PowerShell. Done on Windows 11 + RTX 4080 (20 Nov 2026), check passed (ADR 0015).
 
 ```bash
 # Windows only, in an admin PowerShell: install WSL2 + Ubuntu, then reboot and open "Ubuntu"
 wsl --install -d Ubuntu
+wsl --update          # an old WSL (e.g. 2.0.x) fails to start Ubuntu with Wsl/Service/E_UNEXPECTED
 ```
+
+WSL2 gets half the RAM by default; with 32 GB give it more in `%UserProfile%\.wslconfig` (`[wsl2]`,
+`memory=26GB`, `processors=32`), then `wsl --shutdown`, so the 11 GB HDF5 stays in the page cache.
 
 1. **NVIDIA driver:** the normal Windows (or Linux) driver for the card. Inside WSL2 install **no** driver and
    no CUDA toolkit: `tensorflow[and-cuda]` in `environment.yml` brings its own CUDA libraries. `nvidia-smi`
@@ -74,16 +78,19 @@ python scripts/lab_stability.py --preset audio_only --split 0 --epochs 12 --labe
 
 The two curves should stay within about a point of each other and the loss must keep falling. If CUDA
 diverges like Metal did, train there with `MFFER_CPU=1` (every command; the reporter accepts CPU runs from
-any machine). Record the outcome in ADR 0015.
+any machine). Record the outcome in ADR 0015. (RTX 4080, 20 Nov 2026: within 0.7 points, loss equal to
+two decimals; CUDA runs count.)
 
 The actor splits are **not** regenerated: they are versioned in `splits/` and every machine uses the same
 files (`python -m mffer.data.splits` refuses to overwrite them).
 
 **What will and won't match.** Labels, masks, splits, features and seeds are identical on every machine.
-Training runs on the CPU ([ADR 0001](docs/adr/0001-cpu-only-training.md)); multithreaded CPU kernels are
-not guaranteed to sum in the same order on every machine, so a rerun can differ by a few tenths of a point
-per run; compare against the mean ± sd over the three splits, not single runs. Times per epoch depend on the hardware recorded in each run's `meta.json`. Exact package versions of
-the paper's runs: `requirements-macos-arm64.lock`.
+Training is deterministic ([ADR 0016](docs/adr/0016-deterministic-ops.md)): the same commit, data, seed,
+device and package versions reproduce a run **bit for bit**, also when it was interrupted and resumed, and
+for federated runs. Across devices (CPU vs CUDA, two CPU models) or TensorFlow versions, float rounding
+differs, which grows into a few tenths of a point per run; compare those against the mean ± sd over the
+three splits, not single runs. Times per epoch depend on the hardware recorded in each run's `meta.json`.
+Exact package versions of the paper's runs: `requirements-macos-arm64.lock`.
 
 ## Everyday commands
 
@@ -113,9 +120,9 @@ Paths are set once in `configs/paths.yaml` (dataset at `../data/CREMA-D`, output
 | `mffer/data/splits.py` | Actor-grouped, sex-stratified train/val/test splits, saved as JSON | done |
 | `mffer/data/features.py` | MFCC and frame extraction → HDF5 | done |
 | `mffer/data/pipeline.py` | `tf.data` input pipeline from HDF5 + split ([design](docs/pipeline-design.md)) | done |
-| `tests/` | Invariant tests for splits, pipeline, metrics, reporter and FedProx: `python -m pytest -q tests` | done (24 tests) |
+| `tests/` | Invariant tests for splits, pipeline, metrics, reporter, FedProx and determinism: `python -m pytest -q tests` (run under `mffer.device`'s policy via `conftest.py`) | done (31 tests) |
 | `scripts/lab_stability.py` | The lab experiment behind CPU-only training: one configuration under variants (CPU/GPU, lr, clipnorm, no BN), per-epoch curves, writes nothing to `runs/` | done |
-| `docs/adr/` | Architecture Decision Records: one file per protocol or design decision ([index](docs/adr/README.md)) | done (15 records) |
+| `docs/adr/` | Architecture Decision Records: one file per protocol or design decision ([index](docs/adr/README.md)) | done (16 records) |
 | `pyproject.toml`, `.pre-commit-config.yaml` | Package metadata, ruff lint rules, pytest settings; commit/push hooks (see Development) | done |
 | `scripts/timing_pilot.py` | Time per training step and per batch read on real data | done |
 | `mffer/models.py` | Model builder: M1, M3 and the ladder variants from config flags | done |
@@ -125,7 +132,7 @@ Paths are set once in `configs/paths.yaml` (dataset at `../data/CREMA-D`, output
 | `mffer/baselines.py` | B0: majority class / train mean per head, written as normal run directories | done 19 Nov |
 | `mffer/report.py` | Results ledger, paper tables (`generated/tab-*.tex`) and learning-curve figure, from run directories only | done 19 Nov |
 | `scripts/smoke_test.py` | Environment check on random tensors: training device, M1/M3 steps, Flower | done |
-| `mffer/device.py` | Training-device policy: CPU on macOS (Metal hidden), CUDA on Linux/WSL2, `MFFER_CPU=1` forces the CPU | done 19 Nov; CUDA path untested |
+| `mffer/device.py` | Training-device policy: CPU on macOS (Metal hidden), CUDA on Linux/WSL2, `MFFER_CPU=1` forces the CPU; op determinism always on (ADR 0016) | done 19 Nov; CUDA checked 20 Nov (RTX 4080, WSL2) |
 | `notebooks/eda.ipynb` | Exploratory analysis of CREMA-D: labels, masks, splits, baselines (kernel *Python (mffer)*) | done |
 | `TODO.md`, `todo.html` | Task list (source) and its browser view; refresh with `python3 scripts/render_todo.py` | done |
 | `runs/` | One directory per run (git-ignored) | — |
@@ -147,7 +154,7 @@ same split**, once, at the epoch (or round) chosen on validation. "×3" means th
 | Device | **CPU on macOS, CUDA on an NVIDIA GPU** (`mffer/device.py`, [ADR 0015](docs/adr/0015-cuda-allowed-metal-not.md)). On the Metal GPU (tensorflow-metal 1.2.0, TF 2.18 and 2.19) the same code, data and seed diverge after 3–4 epochs while the CPU trains cleanly (`scripts/lab_stability.py`), so Metal is always hidden and its runs never count. `MFFER_CPU=1` forces the CPU anywhere. `meta.json` records `device` (cpu / cuda) and the GPU model; a run is resumed only on the device it started on, and every federated client must train on the run's device |
 | Primary metric | **Valence macro-F1**, then displayed-intensity MAE, then perceived-intensity MAE ([ADR 0014](docs/adr/0014-primary-metric-valence-f1.md)). Macro, because always answering "negative" already scores 68% valence accuracy (macro-F1 0.27). Tables and pages list metrics in this order |
 | Budget | At most 90 epochs (or rounds; raised from 30 on 18 Nov, when best epochs landed at 25–29); early stopping with patience 5 on **val valence macro-F1** (until 19 Nov: val displayed-emotion accuracy; runs selected that way are `invalid (old monitor)`) |
-| Seed | Weight-initialisation seed = split id (overridable with `--seed`) |
+| Seed | Weight-initialisation seed = split id (overridable with `--seed`). Every other seed derives from it (`models.derive_seed`): shuffle per epoch, dropout per epoch, federated dropout per client and round. Op determinism is on, so a rerun on the same device and packages is bit-identical (ADR 0016) |
 | Metrics | Macro-F1 and accuracy per classification head; MAE per intensity head against the constant predictor; macro-F1 and accuracy by sex; IEO ordering check (perceived intensity rises LO → MD → HI); parameters, minutes per epoch, FL update size (parameters × 4 bytes) |
 | Output | One run directory `runs/<config>-s<split>-<yyyymmdd-hhmm>/`: config, split, seed, git hash, hardware, `epochs.csv`, checkpoints, test predictions and metrics |
 

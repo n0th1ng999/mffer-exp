@@ -4,6 +4,7 @@ stopping, no test scoring) under one variant and prints the per-epoch curve. Wri
   python scripts/lab_stability.py --preset audio_only --split 0 --epochs 12 [--cpu] [--lr 1e-4] [--clipnorm 1]
 """
 import argparse
+import os
 import time
 
 parser = argparse.ArgumentParser()
@@ -18,12 +19,13 @@ parser.add_argument("--label", default="")
 args = parser.parse_args()
 
 import keras  # noqa: E402
-import tensorflow as tf  # noqa: E402
 
 if args.cpu:
-    tf.config.set_visible_devices([], "GPU")
+    os.environ["MFFER_CPU"] = "1"
 
-from mffer import models  # noqa: E402
+from mffer import device, models  # noqa: E402
+
+print(f"{args.label}\tdevice: {device.configure()} {device.names()}, deterministic: {device.deterministic()}")
 from mffer.data.pipeline import Cremad, fit_stats, label_coverage, make_dataset  # noqa: E402
 from mffer.data.splits import rows  # noqa: E402
 

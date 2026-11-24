@@ -1,7 +1,8 @@
 # 0015. Train on CUDA where available; Metal stays hidden
 
 - **Status:** Accepted, 19 Nov 2026. Supersedes the "CPU only everywhere" part of 0001; that the Metal GPU
-  is invalid stands. **CUDA has not yet been checked against the CPU** (see Consequences).
+  is invalid stands. CUDA checked against the CPU on 20 Nov 2026: agrees (see Outcome). The "not
+  deterministic" consequence is superseded by [0016](0016-deterministic-ops.md)
 - **Where:** `mffer/device.py` (`configure`, `current`, `names`, `check_resume`), `mffer/train.py`,
   `mffer/federated.py` (client device report, `aggregate_fit` check, Ray `num_gpus`), `mffer/report.py`
   (status), `scripts/smoke_test.py`; tested in `tests/test_report.py`
@@ -39,3 +40,21 @@ M3 on the CPU takes up to about 9.5 h per split, which caps how many runs fit be
   states which hardware trained which experiment. Per-epoch times are only comparable within one device.
 - The CUDA path (memory growth, Ray GPU assignment under WSL2) has not been run yet. The smoke test on the
   new machine is its first test.
+
+## Outcome of the CUDA check (20 Nov 2026)
+
+Machine: Windows 11, WSL2 (Ubuntu), NVIDIA GeForce RTX 4080 16 GB (driver 560.94), AMD Ryzen 9 7950X;
+TensorFlow 2.19.1, Keras 3.15.1. `scripts/lab_stability.py --preset audio_only --split 0 --epochs 12`,
+`--cpu` vs CUDA, same seed, before op determinism (0016) was switched on:
+
+| Epoch | CPU val displayed acc | CUDA val displayed acc | Train loss (both) |
+|---|---|---|---|
+| 1 | 0.369 | 0.367 | 4.30 |
+| 4 | 0.438 | 0.436 | 3.61 |
+| 8 | 0.474 | 0.481 | 3.44 |
+| 12 | 0.501 | 0.499 | 3.31 |
+
+Largest gap 0.7 points; the loss falls every epoch on both and matches to two decimals throughout, unlike
+Metal, which diverged after 3–4 epochs. CUDA runs count. Smoke test on the same machine: M3 0.157 s/step on
+CUDA vs 1.46 s/step on the CPU (about 9×). The federated CUDA path (Ray `num_gpus`) was then exercised by the
+end-to-end check in 0016.
