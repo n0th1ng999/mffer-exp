@@ -1,6 +1,6 @@
 # L1: local-only. Each F2 client trains M3 alone on its own actors (same rows as in F2), no aggregation.
 # Run once per client: python -m mffer.train configs/runs/l1_local.yaml --split S --client K
-# Training protocol (max_epochs 90, patience 5, monitor val_displayed_valence_macro_f1,
+# Training protocol (max_epochs 90, min_epochs 20, patience 10, monitor val_displayed_valence_macro_f1,
 # batch 16) comes from mffer.train.DEFAULTS and is identical for every configuration.
 name: l1_local
 model:

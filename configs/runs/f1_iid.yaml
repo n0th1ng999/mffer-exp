@@ -1,6 +1,6 @@
 # F1: FL-IID. M3, 2 clients, training clips dealt round-robin (both clients see every train actor), FedAvg.
 # One round = one local epoch per client; rounds follow the same budget and stopping rule as epochs.
-# Training protocol (max_epochs 90, patience 5, monitor val_displayed_valence_macro_f1,
+# Training protocol (max_epochs 90, min_epochs 20, patience 10, monitor val_displayed_valence_macro_f1,
 # batch 16) comes from mffer.train.DEFAULTS and is identical for every configuration.
 name: f1_iid
 model:

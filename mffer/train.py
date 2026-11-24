@@ -5,7 +5,7 @@
     python -m mffer.train --resume runs/c1_m1-s0-20261118-2030      # continue after a crash
 
 Same protocol for every configuration: Adam 1e-4, batch 16, at most `max_epochs`, early stopping with
-`patience` on `monitor` (val valence macro-F1, the primary metric: ADR 0014). The full model is saved after every epoch (so a
+`patience` on `monitor` (val valence macro-F1, the primary metric: ADR 0014), never before `min_epochs` (ADR 0023). The full model is saved after every epoch (so a
 crash costs one epoch) and the best epoch's weights separately. The test split is scored exactly once, at
 the end, with the best weights; its predictions and metrics are written to the run directory.
 
@@ -39,11 +39,19 @@ from mffer.data.splits import client_rows, rows
 from mffer.metrics import MONITOR, compute, predictions_table
 from mffer.models import build_model, derive_seed, reseed, spec_from_config
 
-# protocol: 2 since 24 Nov 2026 (ADR 0017); finished runs of an older protocol are "invalid (old protocol)".
-# score_test: false for dev runs (configs/dev): they stop at validation and never touch the test actors.
-PROTOCOL = 2
-DEFAULTS = {"max_epochs": 90, "patience": 5, "monitor": MONITOR, "batch_size": 16, "protocol": PROTOCOL,
-            "score_test": True}
+# protocol: 3 since 24 Nov 2026 (ADR 0023: min_epochs, patience 10); finished runs of an older protocol are
+# "invalid (old protocol)". score_test: false for dev runs (configs/dev): they stop at validation and never
+# touch the test actors.
+PROTOCOL = 3
+DEFAULTS = {"max_epochs": 90, "min_epochs": 20, "patience": 10, "monitor": MONITOR, "batch_size": 16,
+            "protocol": PROTOCOL, "score_test": True}
+
+
+def should_stop(done: int, since_best: int, config: dict) -> bool:
+    """The stopping rule of every run, centralised or federated (ADR 0023): the epoch/round budget is spent, or
+    at least `min_epochs` are done and the monitor has not improved for `patience` of them. The minimum keeps
+    early stopping from ending a run while valence still predicts the majority class (flat monitor)."""
+    return done >= config["max_epochs"] or (done >= config.get("min_epochs", 0) and since_best >= config["patience"])
 
 
 class Reseed(keras.callbacks.Callback):
@@ -94,13 +102,14 @@ def load_history(run_dir: Path, suffix: str) -> tuple[pd.DataFrame, Path | None]
 
 
 class EpochCheckpoint(keras.callbacks.Callback):
-    """After each epoch: keep the best weights, save the full model (resume point), stop after `patience`
-    epochs without improvement. Runs after CSVLogger, so the epoch's row is written before its resume point
+    """After each epoch: keep the best weights, save the full model (resume point), stop by `should_stop`.
+    Runs after CSVLogger, so the epoch's row is written before its resume point
     (see `load_history`). State is rebuilt from epochs.csv on resume."""
 
-    def __init__(self, run_dir: Path, monitor: str, patience: int, history: pd.DataFrame):
+    def __init__(self, run_dir: Path, config: dict, history: pd.DataFrame):
         super().__init__()
-        self.run_dir, self.monitor, self.patience = run_dir, monitor, patience
+        self.run_dir, self.config, monitor = run_dir, config, config["monitor"]
+        self.monitor, self.done = monitor, len(history)
         self.best = history[monitor].max() if len(history) else -np.inf
         self.best_epoch = int(history[monitor].idxmax()) if len(history) else -1
         self.since_best = len(history) - 1 - self.best_epoch if len(history) else 0
@@ -112,8 +121,9 @@ class EpochCheckpoint(keras.callbacks.Callback):
             save_atomic(self.run_dir / "best.weights.h5", self.model.save_weights)
         else:
             self.since_best += 1
-        save_checkpoint(self.run_dir, epoch + 1, ".keras", self.model.save)
-        if self.since_best >= self.patience:
+        self.done = epoch + 1
+        save_checkpoint(self.run_dir, self.done, ".keras", self.model.save)
+        if should_stop(self.done, self.since_best, self.config):
             self.model.stop_training = True
 
 
@@ -179,9 +189,8 @@ def run(run_dir: Path) -> dict:
             meta["valence_class_weights"] = dict(zip(VALENCES, valence_class_weights(data, train), strict=True))
         (run_dir / "meta.json").write_text(json.dumps(meta, indent=1))
 
-    checkpoint = EpochCheckpoint(run_dir, config["monitor"], config["patience"], history)
-    done = len(history) >= config["max_epochs"] or checkpoint.since_best >= config["patience"]
-    if not done:
+    checkpoint = EpochCheckpoint(run_dir, config, history)
+    if not should_stop(checkpoint.done, checkpoint.since_best, config):
         start = time.perf_counter()
         model.fit(make_dataset(data, train, spec, stats, training=True, seed=meta["seed"],
                                batch_size=config["batch_size"], first_epoch=len(history)),

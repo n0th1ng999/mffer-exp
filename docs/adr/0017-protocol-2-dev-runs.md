@@ -15,7 +15,8 @@ epoch's row and its checkpoint (resume points `last-<n>.keras` / `last-<n>.weigh
 
 ## Decision
 
-- Every run records `protocol` in its config.yaml; this repository is at protocol **2**. The reporter
+- Every run records `protocol` in its config.yaml; this repository is at protocol **2** (3 since
+  [0023](0023-minimum-epochs-before-early-stop.md)). The reporter
   marks finished trained runs of an older protocol (no field = 1) "invalid (old protocol)". B0 trains
   nothing and is exempt.
 - Model changes (0018–0022) are flags of `ModelSpec`, off by default. They are chosen on **dev runs**:

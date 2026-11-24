@@ -5,7 +5,7 @@
 
 A config adds `federated: {clients: N, partition: iid | actor}` to the usual run config. The protocol matches
 `mffer.train`: same model, Adam 1e-4, batch 16, at most `max_epochs` rounds, early stopping with `patience`
-on `monitor`, test scored once with the best round's weights. One round = one local epoch on every client,
+on `monitor` (never before `min_epochs`, ADR 0023), test scored once with the best round's weights. One round = one local epoch on every client,
 i.e. one pass over all training rows, so rounds and centralised epochs cost the same.
 
 - Clients: `splits.client_rows` (seed = split id), so client k of F2 holds the rows local-only client k
@@ -51,6 +51,7 @@ from mffer.train import (
     save_checkpoint,
     score_test,
     score_val,
+    should_stop,
 )
 
 # ---------------------------------------------------------------- client (runs in a Flower/Ray worker)
@@ -136,12 +137,12 @@ def make_client_app(run_dir: Path):
 class RoundLog:
     """Server-side bookkeeping, the federated counterpart of train.EpochCheckpoint: after each round append
     to epochs.csv, keep the best round's weights, then save the global weights as the resume point
-    (`last-<round>.weights.h5`; see train.load_history), stop after `patience` rounds without improvement.
+    (`last-<round>.weights.h5`; see train.load_history), stop by train.should_stop.
     State is rebuilt from epochs.csv on resume."""
 
     def __init__(self, run_dir: Path, model: keras.Model, val: tf.data.Dataset, config: dict):
         self.run_dir, self.model, self.val = run_dir, model, val
-        self.monitor, self.patience, self.max_rounds = config["monitor"], config["patience"], config["max_epochs"]
+        self.config, self.monitor = config, config["monitor"]
         self.file = run_dir / "epochs.csv"
         history, self.last = load_history(run_dir, ".weights.h5")
         self.done = len(history)
@@ -153,7 +154,7 @@ class RoundLog:
 
     @property
     def finished(self) -> bool:
-        return self.done >= self.max_rounds or self.since_best >= self.patience
+        return should_stop(self.done, self.since_best, self.config)
 
     def end_round(self, weights: list[np.ndarray]) -> None:
         self.model.set_weights(weights)

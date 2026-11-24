@@ -1,7 +1,8 @@
 # 0004. Budget of 90 epochs (or rounds), patience 5, for every configuration
 
 - **Status:** Accepted, 18 Nov 2026 (raised from 30 epochs). Monitored metric superseded by
-  [0014](0014-primary-metric-valence-f1.md); budget and patience stand
+  [0014](0014-primary-metric-valence-f1.md); budget stands; patience 10 and a 20-epoch minimum since
+  [0023](0023-minimum-epochs-before-early-stop.md)
 - **Where:** `mffer/train.py` (`DEFAULTS`), applied to federated rounds too
 
 ## Context

@@ -1,5 +1,5 @@
 # D2: D1 + modality gating
-# Training protocol (max_epochs 90, patience 5, monitor val_displayed_valence_macro_f1,
+# Training protocol (max_epochs 90, min_epochs 20, patience 10, monitor val_displayed_valence_macro_f1,
 # batch 16) comes from mffer.train.DEFAULTS and is identical for every configuration.
 name: d2
 model:
