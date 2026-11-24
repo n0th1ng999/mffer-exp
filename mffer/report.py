@@ -14,7 +14,9 @@ perceived-intensity MAE, then the secondary scores.
 
 Which runs count: per (config, split), the latest finished run trained on the CPU or CUDA (mffer.device)
 that selected its epoch with the current monitor (metrics.MONITOR; a trained run whose config.yaml names
-another monitor is "invalid (old monitor)"). Earlier finished runs are "superseded"; Metal GPU runs are
+another monitor is "invalid (old monitor)") under the current protocol (train.PROTOCOL; a trained run of an
+older one is "invalid (old protocol)", ADR 0017). Dev runs (val.json, no test) are "dev (val only)" and never
+count. Earlier finished runs are "superseded"; Metal GPU runs are
 "invalid (GPU)" (the Metal GPU diverges, ADR 0001). Runs from before 19 Nov have no `device`: a GPU among
 them was Metal.
 An experiment's score on a split is the mean over its configs (L1: its two clients, both required); the
@@ -31,6 +33,7 @@ import yaml
 
 from mffer.config import load_paths
 from mffer.metrics import MONITOR, PRIORITY
+from mffer.train import PROTOCOL
 
 RUN_DIR = re.compile(r"^(?P<config>.+)-s(?P<split>\d)-(?P<stamp>\d{8}-\d{4})$")
 EXPERIMENTS = {  # README ID: (description, configs averaged per split)
@@ -82,12 +85,15 @@ def load_runs(runs_dir: Path) -> pd.DataFrame:
             continue
         meta = json.loads((path / "meta.json").read_text()) if (path / "meta.json").exists() else {}
         result = json.loads((path / "test.json").read_text()) if (path / "test.json").exists() else None
+        dev = (path / "val.json").exists()
         config = yaml.safe_load((path / "config.yaml").read_text()) if (path / "config.yaml").exists() else {}
         record = {"run": path.name, "config": match["config"], "id": CONFIG_ID.get(match["config"]),
                   "split": int(match["split"]), "git": meta.get("git"), "device": meta.get("device", "metal" if meta.get("gpu") else "cpu"),
                   "parameters": meta.get("parameters"), "update_bytes": meta.get("update_bytes"),
                   "train_minutes": meta.get("train_minutes"), "finished": result is not None,
-                  "old_monitor": config.get("monitor", MONITOR) != MONITOR}   # B0 trains nothing: no monitor
+                  "old_monitor": config.get("monitor", MONITOR) != MONITOR,   # B0 trains nothing: no monitor
+                  "old_protocol": isinstance(config.get("model"), dict) and config.get("protocol", 1) < PROTOCOL,
+                  "dev": dev}
         if result:
             record.update(best_epoch=result.get("best_epoch"), epochs_run=result.get("epochs_run"),
                           **pd.json_normalize(result["test"]).iloc[0].to_dict())
@@ -96,10 +102,12 @@ def load_runs(runs_dir: Path) -> pd.DataFrame:
     if runs.empty:
         return runs
     runs["status"] = "incomplete"
+    runs.loc[runs.dev, "status"] = "dev (val only)"
+    runs.loc[runs.finished & runs.old_protocol, "status"] = "invalid (old protocol)"
     runs.loc[runs.finished & runs.old_monitor, "status"] = "invalid (old monitor)"
     metal = ~runs.device.isin(["cpu", "cuda"])
     runs.loc[runs.finished & metal, "status"] = "invalid (GPU)"
-    valid = runs.finished & ~metal & ~runs.old_monitor
+    valid = runs.finished & ~metal & ~runs.old_monitor & ~runs.old_protocol
     latest = runs[valid].groupby(["config", "split"]).run.max()   # names sort by time stamp
     runs.loc[valid, "status"] = "superseded"
     runs.loc[runs.run.isin(latest), "status"] = "counted"

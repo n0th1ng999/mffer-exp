@@ -33,12 +33,17 @@ import yaml
 
 from mffer import device
 from mffer.config import ROOT, load_paths, load_run_config
-from mffer.data.pipeline import AudioStats, Cremad, fit_stats, label_coverage, make_dataset
+from mffer.data.cremad import VALENCES
+from mffer.data.pipeline import AudioStats, Cremad, fit_stats, label_coverage, make_dataset, valence_class_weights
 from mffer.data.splits import client_rows, rows
 from mffer.metrics import MONITOR, compute, predictions_table
 from mffer.models import build_model, derive_seed, reseed, spec_from_config
 
-DEFAULTS = {"max_epochs": 90, "patience": 5, "monitor": MONITOR, "batch_size": 16}
+# protocol: 2 since 24 Nov 2026 (ADR 0017); finished runs of an older protocol are "invalid (old protocol)".
+# score_test: false for dev runs (configs/dev): they stop at validation and never touch the test actors.
+PROTOCOL = 2
+DEFAULTS = {"max_epochs": 90, "patience": 5, "monitor": MONITOR, "batch_size": 16, "protocol": PROTOCOL,
+            "score_test": True}
 
 
 class Reseed(keras.callbacks.Callback):
@@ -129,6 +134,8 @@ def new_run(config_file: Path, split_id: int, seed: int | None, client: int | No
         config["name"] = f"{config['name']}_c{client}"
     else:
         assert "local" not in config, "a local-only config needs --client"
+    if seed is not None and seed != split_id:   # seed-variance runs get their own config name (and directory)
+        config["name"] = f"{config['name']}_seed{seed}"
     run_dir = load_paths().runs / f"{config['name']}-s{split_id}-{datetime.now():%Y%m%d-%H%M}"
     run_dir.mkdir(parents=True)
     meta = {"config_file": str(config_file), "split": split_id, "seed": split_id if seed is None else seed,
@@ -155,7 +162,7 @@ def run(run_dir: Path) -> dict:
 
     stats_file = run_dir / "audio_stats.json"
     if not stats_file.exists():
-        fit_stats(data, train).save(stats_file)
+        fit_stats(data, train, spec.audio_features).save(stats_file)
     stats = AudioStats.load(stats_file)
     coverage = label_coverage(data, train, spec)
 
@@ -168,6 +175,8 @@ def run(run_dir: Path) -> dict:
         model = build_model(spec, coverage=coverage)
         meta.update(parameters=model.count_params(), coverage=coverage,
                     loss_weights_applied={h: w / coverage[h] for h, w in spec.loss_weights.items()})
+        if spec.balance_valence:
+            meta["valence_class_weights"] = dict(zip(VALENCES, valence_class_weights(data, train), strict=True))
         (run_dir / "meta.json").write_text(json.dumps(meta, indent=1))
 
     checkpoint = EpochCheckpoint(run_dir, config["monitor"], config["patience"], history)
@@ -181,7 +190,31 @@ def run(run_dir: Path) -> dict:
                   callbacks=[Reseed(meta["seed"]), keras.callbacks.CSVLogger(log_file, append=True), checkpoint])
         meta["train_minutes"] = meta.get("train_minutes", 0) + (time.perf_counter() - start) / 60
 
+    if not config.get("score_test", True):
+        return score_val(run_dir, checkpoint.best_epoch, meta)
     return score_test(run_dir, model, data, test, spec, stats, checkpoint.best_epoch, meta)
+
+
+def score_val(run_dir: Path, best_epoch: int, meta: dict) -> dict:
+    """Dev runs (score_test: false): the validation scores at the best epoch, in val.json; test is not read."""
+    history = pd.read_csv(run_dir / "epochs.csv")
+    result = {"best_epoch": int(best_epoch) + 1, "epochs_run": len(history),
+              "val_at_best": history.iloc[best_epoch].to_dict()}
+    (run_dir / "val.json").write_text(json.dumps(result, indent=1))
+    meta["finished"] = datetime.now().isoformat()
+    (run_dir / "meta.json").write_text(json.dumps(meta, indent=1))
+    return result
+
+
+def print_result(result: dict) -> None:
+    if "test" in result:
+        return print_test(result["test"])
+    val = result["val_at_best"]
+    print(f"dev run, best epoch {result['best_epoch']} of {result['epochs_run']} (test not scored):")
+    for key in (MONITOR, "val_displayed_intensity_mae", "val_perceived_intensity_mae",
+                "val_displayed_emotion_macro_f1", "val_perceived_emotion_macro_f1"):
+        if key in val:
+            print(f"  {key}: {val[key]:.4f}")
 
 
 def score_test(run_dir: Path, model: keras.Model, data: Cremad, test: np.ndarray, spec, stats: AudioStats,
@@ -228,7 +261,7 @@ def main() -> None:
         assert args.config and args.split is not None, "give a config and --split, or --resume"
         run_dir = new_run(args.config, args.split, args.seed, args.client)
     print(f"run directory: {run_dir}")
-    print_test(run(run_dir)["test"])
+    print_result(run(run_dir))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,5 @@
+# Dev run (ADR 0017): split 0, validation only, never scored on test. C2/M3, protocol-1 model (baseline).
+name: dev_m3_1_base
+score_test: false
+model:
+  preset: m3

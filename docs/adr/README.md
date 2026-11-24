@@ -28,3 +28,9 @@ Rules:
 | [0014](0014-primary-metric-valence-f1.md) | Primary metric valence macro-F1, then displayed and perceived intensity MAE; it picks the epoch | Accepted, 19 Nov 2026 |
 | [0015](0015-cuda-allowed-metal-not.md) | Train on CUDA where available; Metal stays hidden; device recorded and checked | Accepted, 19 Nov 2026; CUDA checked 20 Nov; non-determinism superseded by 0016 |
 | [0016](0016-deterministic-ops.md) | Every run is deterministic: op determinism, explicit dropout seeds, exact resume, ordered FedAvg | Accepted, 20 Nov 2026 |
+| [0017](0017-protocol-2-dev-runs.md) | Protocol 2: versioned runs; model changes chosen on validation-only dev runs | Accepted, 24 Nov 2026 |
+| [0018](0018-masked-audio-pooling.md) | Pool audio over real frames only | Proposed, 24 Nov 2026 (dev sweep) |
+| [0019](0019-balanced-valence-loss.md) | Inverse-frequency valence loss weights, training only | Proposed, 24 Nov 2026 (dev sweep) |
+| [0020](0020-logmel-audio.md) | Log-mel audio features with a 2-D conv encoder | Proposed, 24 Nov 2026 (dev sweep) |
+| [0021](0021-deterministic-augmentation.md) | Deterministic training-time augmentation | Proposed, 24 Nov 2026 (dev sweep) |
+| [0022](0022-model-capacity.md) | Model capacity (width, visual blocks) chosen on validation | Proposed, 24 Nov 2026 (dev sweep) |

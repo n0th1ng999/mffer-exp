@@ -1,0 +1,5 @@
+# Dev run (ADR 0017): split 0, validation only, never scored on test. U1 audio-only, protocol-1 model (baseline).
+name: dev_u1_1_base
+score_test: false
+model:
+  preset: audio_only

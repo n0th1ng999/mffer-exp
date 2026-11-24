@@ -1,0 +1,10 @@
+# Dev run (ADR 0017): split 0, validation only, never scored on test. + width x2 (ADR 0022).
+name: dev_u1_6_w2
+score_test: false
+model:
+  preset: audio_only
+  audio_pool: masked
+  balance_valence: true
+  audio_features: logmel
+  augment: true
+  width: 2

@@ -1,0 +1,6 @@
+# Dev run (ADR 0017): split 0, validation only, never scored on test. + masked audio pooling (ADR 0018).
+name: dev_u1_2_mask
+score_test: false
+model:
+  preset: audio_only
+  audio_pool: masked

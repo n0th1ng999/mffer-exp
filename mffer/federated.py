@@ -39,10 +39,19 @@ import yaml
 
 from mffer import device
 from mffer.config import load_run_config
-from mffer.data.pipeline import AudioStats, Cremad, fit_stats, label_coverage, make_dataset
+from mffer.data.pipeline import AudioStats, Cremad, fit_stats, label_coverage, make_dataset, valence_class_weights
 from mffer.data.splits import client_rows, rows
 from mffer.models import build_model, compile_model, derive_seed, reseed, spec_from_config
-from mffer.train import DEFAULTS, load_history, new_run, print_test, save_atomic, save_checkpoint, score_test
+from mffer.train import (
+    DEFAULTS,
+    load_history,
+    new_run,
+    print_result,
+    save_atomic,
+    save_checkpoint,
+    score_test,
+    score_val,
+)
 
 # ---------------------------------------------------------------- client (runs in a Flower/Ray worker)
 
@@ -221,7 +230,7 @@ def run(run_dir: Path) -> dict:
     # Each client's statistics come from its own rows; the server only pools the summaries.
     for k, own in enumerate(clients):
         if not (run_dir / f"audio_stats_c{k}.json").exists():
-            fit_stats(data, own).save(run_dir / f"audio_stats_c{k}.json")
+            fit_stats(data, own, spec.audio_features).save(run_dir / f"audio_stats_c{k}.json")
     stats = AudioStats.combine([AudioStats.load(run_dir / f"audio_stats_c{k}.json") for k in range(len(clients))])
     stats.save(run_dir / "audio_stats.json")
 
@@ -232,7 +241,9 @@ def run(run_dir: Path) -> dict:
         print(f"resuming after round {log.done}")
     else:
         meta.update(parameters=model.count_params(), update_bytes=4 * model.count_params(),
-                    clients=[{"clips": len(c), "actors": int(data.clips.actor_id.iloc[c].nunique())} for c in clients],
+                    clients=[{"clips": len(c), "actors": int(data.clips.actor_id.iloc[c].nunique()),
+                              **({"valence_class_weights": valence_class_weights(data, c)} if spec.balance_valence
+                                 else {})} for c in clients],
                     client_optimizer="fresh Adam(1e-4) every round; clients keep no state")
     meta["client_devices_checked"] = True   # aggregate_fit raises if a client used another device
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=1))
@@ -256,6 +267,8 @@ def run(run_dir: Path) -> dict:
             raise SystemExit(f"simulation ended after {log.done} of {config['max_epochs']} rounds without "
                              f"early stopping: see the Flower log above; continue with --resume {run_dir}")
 
+    if not config.get("score_test", True):
+        return score_val(run_dir, log.best_round, meta)
     return score_test(run_dir, model, data, test, spec, stats, log.best_round, meta)
 
 
@@ -274,7 +287,7 @@ def main() -> None:
         assert "federated" in {**DEFAULTS, **load_run_config(args.config)}, "config has no `federated:` section"
         run_dir = new_run(args.config, args.split, args.seed)
     print(f"run directory: {run_dir}")
-    print_test(run(run_dir)["test"])
+    print_result(run(run_dir))
 
 
 if __name__ == "__main__":

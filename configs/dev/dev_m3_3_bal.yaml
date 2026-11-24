@@ -1,0 +1,7 @@
+# Dev run (ADR 0017): split 0, validation only, never scored on test. + balanced valence loss (ADR 0019).
+name: dev_m3_3_bal
+score_test: false
+model:
+  preset: m3
+  audio_pool: masked
+  balance_valence: true

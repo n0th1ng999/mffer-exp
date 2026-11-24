@@ -4,6 +4,7 @@
 #   ./run c1 0        only split 0
 #   ./run l1          local-only: both clients of every split (two trainings per split)
 #   ./run resume runs/<run-dir>    (federated or not, read from the run's config.yaml)
+#   ./run dev m3      dev sweep (configs/dev, split 0, seeds 0 1 2, validation only); finished runs are skipped
 # Uses the `mffer` conda environment; no need to activate it. Each run's output is shown and also
 # saved to runs/_logs/<id>-s<split>-<yyyymmdd-hhmm>.log.
 set -euo pipefail
@@ -13,6 +14,7 @@ export TF_CPP_MIN_LOG_LEVEL=1   # hide TensorFlow INFO lines; warnings and error
 usage() {
     echo "usage: ./run <experiment> [split ...]    e.g. ./run c1, ./run c2 0"
     echo "       ./run resume runs/<run-dir>"
+    echo "       ./run dev u1 | m3 | all | <dev config> [seed ...]    (dev sweep: split 0, val only)"
     echo "experiments: b0 u1 u2 c1 c2 d1 d2 d3 d4 f1 f2 f3 f4 l1"
     exit 2
 }
@@ -33,6 +35,31 @@ if [[ "$id" == resume ]]; then
     module=mffer.train
     grep -q '^federated:' "$1/config.yaml" && module=mffer.federated
     exec "$PY" -u -m "$module" --resume "$1"
+fi
+
+if [[ "$id" == dev ]]; then
+    # Dev sweep (ADR 0017): split 0, validation only. ./run dev u1 | m3 | all | <config name>  [seeds, default 0 1 2]
+    [[ $# -ge 1 ]] || usage
+    which="$1"; shift
+    case "$which" in
+        u1|m3) configs=(configs/dev/dev_"$which"_*.yaml) ;;
+        all) configs=(configs/dev/dev_u1_*.yaml configs/dev/dev_m3_*.yaml) ;;
+        *) configs=(configs/dev/"$which".yaml); [[ -f "${configs[0]}" ]] || { echo "no configs/dev/$which.yaml"; exit 2; } ;;
+    esac
+    seeds="${*:-0 1 2}"
+    for config in "${configs[@]}"; do
+      for seed in $seeds; do
+        tag="$(basename "$config" .yaml)-seed$seed"
+        name="$(basename "$config" .yaml)"; [[ "$seed" == 0 ]] || name="${name}_seed$seed"
+        if compgen -G "runs/$name-s0-*/val.json" > /dev/null; then echo "== $tag: done, skipped"; continue; fi
+        log="runs/_logs/$tag-$(date +%Y%m%d-%H%M).log"
+        echo "== $tag  (log: $log)"
+        "$PY" -u -m mffer.train "$config" --split 0 --seed "$seed" 2>&1 | tee "$log" |
+            grep --line-buffered -v -e '^I0000 ' -e 'absl::InitializeLog'
+      done
+    done
+    "$PY" scripts/dev_summary.py
+    exit
 fi
 
 module=mffer.train; clients=""

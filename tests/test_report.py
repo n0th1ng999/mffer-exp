@@ -6,16 +6,20 @@ import yaml
 
 from mffer.metrics import MONITOR
 from mffer.report import load_runs, per_split, results_table
+from mffer.train import PROTOCOL
 
 
-def fake_run(root, name, score, gpu=(), finished=True, monitor=MONITOR, device=None):
+def fake_run(root, name, score, gpu=(), finished=True, monitor=MONITOR, device=None, protocol=PROTOCOL, dev=False):
     """`score` is the primary metric, valence macro-F1. `device` None = a run from before mffer.device."""
     path = root / name
     path.mkdir()
     meta = {"gpu": list(gpu), "git": "abc", "parameters": 10, "update_bytes": 40, "train_minutes": 6.0}
     (path / "meta.json").write_text(json.dumps(meta if device is None else {**meta, "device": device}))
-    (path / "config.yaml").write_text(yaml.safe_dump({"name": name.split("-")[0], "monitor": monitor}))
-    if finished:
+    config = {"name": name.split("-")[0], "monitor": monitor, "model": {"preset": "m3"}}
+    (path / "config.yaml").write_text(yaml.safe_dump(config if protocol is None else {**config, "protocol": protocol}))
+    if dev:
+        (path / "val.json").write_text(json.dumps({"best_epoch": 2, "epochs_run": 3, "val_at_best": {}}))
+    elif finished:
         (path / "test.json").write_text(json.dumps({"best_epoch": 2, "epochs_run": 3, "test": {
             "displayed_valence": {"macro_f1": score, "macro_f1_by_sex": {"Female": score, "Male": score}}}}))
 
@@ -33,7 +37,16 @@ def runs(tmp_path):
     fake_run(tmp_path, "l1_local_c1-s0-20261123-1100", 0.40)
     fake_run(tmp_path, "l1_local_c0-s1-20261123-1200", 0.30)           # client 1 missing on split 1
     fake_run(tmp_path, "c2_m3-s2-20261123-1300", 0.80, monitor="val_displayed_emotion_accuracy")  # old rule
+    fake_run(tmp_path, "c2_m3-s2-20261124-0900", 0.85, protocol=None)   # before ADR 0017: protocol 1
+    fake_run(tmp_path, "c2_m3-s2-20261124-1000", 0.95, dev=True)        # dev run: val only, never counts
     return load_runs(tmp_path)
+
+
+def test_old_protocol_and_dev_runs_never_count(runs):
+    status = dict(zip(runs.run, runs.status, strict=True))
+    assert status["c2_m3-s2-20261124-0900"] == "invalid (old protocol)"
+    assert status["c2_m3-s2-20261124-1000"] == "dev (val only)"
+    assert per_split(runs, "C2").index.tolist() == [0, 1]   # split 2 has no counted run
 
 
 def test_latest_finished_cpu_run_counts(runs):

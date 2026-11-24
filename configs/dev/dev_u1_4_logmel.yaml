@@ -1,0 +1,8 @@
+# Dev run (ADR 0017): split 0, validation only, never scored on test. + log-mel audio (ADR 0020).
+name: dev_u1_4_logmel
+score_test: false
+model:
+  preset: audio_only
+  audio_pool: masked
+  balance_valence: true
+  audio_features: logmel

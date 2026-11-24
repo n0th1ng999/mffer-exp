@@ -1,0 +1,10 @@
+# Dev run (ADR 0017): split 0, validation only, never scored on test. step 5 + a 4th visual conv block (ADR 0022).
+name: dev_m3_7_vb4
+score_test: false
+model:
+  preset: m3
+  audio_pool: masked
+  balance_valence: true
+  audio_features: logmel
+  augment: true
+  visual_blocks: 4

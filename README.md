@@ -38,6 +38,7 @@ conda activate mffer
 python scripts/smoke_test.py               # training device, M1/M3 train a few steps, Flower runs 2 rounds
 python -m mffer.data.cremad --summary      # checks the CREMA-D commit, builds clips.csv
 python -m mffer.data.features              # MFCCs + 10 frames per clip -> cremad.h5 (~1–30 min, ~11 GB)
+python -m mffer.data.features --audio logmel --workers 24   # log-mel -> logmel.h5 (~1 min, 0.8 GB; ADR 0020)
 python -m pytest -q tests                  # invariants: splits, masks, normalisation, metrics
 ```
 
@@ -114,13 +115,14 @@ Paths are set once in `configs/paths.yaml` (dataset at `../data/CREMA-D`, output
 | `requirements-macos-arm64.lock` | Exact package versions of the paper's runs | done |
 | `splits/` | The three frozen actor splits (versioned; never regenerated) | done |
 | `configs/paths.yaml` | Dataset and output paths | done |
+| `configs/dev/*.yaml`, `scripts/dev_summary.py` | Dev sweep (ADR 0017): one ladder step per file (U1 and M3), split 0, validation only; `./run dev` runs it, the summary gives mean ± sd over seeds and the gain per step | done 24 Nov |
 | `configs/runs/*.yaml` | One file per configuration: C1, C2, U1, U2, D1–D4, F1 (`f1_iid`), F2 (`f2_actor`), F3 (`f3_actor4`), F4 (`f4_fedprox`), L1 (`l1_local`) | done |
 | `mffer/config.py` | Load paths and run configs | done |
 | `mffer/data/cremad.py` | Index CREMA-D: one row per clip with actor, sentence, labels, demographics | done (labels frozen 18 Nov) |
 | `mffer/data/splits.py` | Actor-grouped, sex-stratified train/val/test splits, saved as JSON | done |
 | `mffer/data/features.py` | MFCC and frame extraction → HDF5 | done |
 | `mffer/data/pipeline.py` | `tf.data` input pipeline from HDF5 + split ([design](docs/pipeline-design.md)) | done |
-| `tests/` | Invariant tests for splits, pipeline, metrics, reporter, FedProx and determinism: `python -m pytest -q tests` (run under `mffer.device`'s policy via `conftest.py`) | done (31 tests) |
+| `tests/` | Invariant tests for splits, pipeline, metrics, reporter, FedProx, determinism, resume points and the protocol-2 options: `python -m pytest -q tests` (run under `mffer.device`'s policy via `conftest.py`) | done (46 tests) |
 | `scripts/lab_stability.py` | The lab experiment behind CPU-only training: one configuration under variants (CPU/GPU, lr, clipnorm, no BN), per-epoch curves, writes nothing to `runs/` | done |
 | `docs/adr/` | Architecture Decision Records: one file per protocol or design decision ([index](docs/adr/README.md)) | done (16 records) |
 | `pyproject.toml`, `.pre-commit-config.yaml` | Package metadata, ruff lint rules, pytest settings; commit/push hooks (see Development) | done |
@@ -163,7 +165,10 @@ same split**, once, at the epoch (or round) chosen on validation. "×3" means th
 All models come from `build_model` in `mffer/models.py`; a configuration is a preset of flags, so two
 configurations differ only by the flags they declare.
 
-- **Audio encoder:** Conv1D(64, 5) + BatchNorm → global average pooling → Dense 64.
+- **Audio encoder:** Conv1D(64, 5) + BatchNorm → global average pooling → Dense 64. Protocol-2 options
+  (ADRs 0018, 0020): masked pooling over real frames only; log-mel input with 3 × [Conv2D(32/64/128) + BN +
+  MaxPool 2] → mean over mel → (masked) mean over time → Dense 64. `width: 2` doubles every size after the
+  encoders, and `visual_blocks: 4` adds a 256-filter block to the deep visual encoder (ADR 0022).
 - **Simple visual encoder (M1):** per frame Conv2D(16, 3, stride 2) → MaxPool 4 → global average pooling;
   then LSTM(32) over the 10 frames.
 - **Deep visual encoder:** per frame 3 × [Conv2D(32/64/128, 3) + BatchNorm + MaxPool 2] → global average
@@ -234,6 +239,24 @@ hold the same rows (`splits.client_rows`, seed = split id; tested).
 |---|---|---|---|
 | **S1** | Soft perceived-emotion labels | C2 with the perceived-emotion head trained on the rating distribution instead of the majority vote (tied clips no longer masked) | 1 |
 
+### Protocol 2 and the dev sweep (24 Nov 2026)
+
+Every run records `protocol: 2` ([ADR 0017](docs/adr/0017-protocol-2-dev-runs.md)); finished runs of
+protocol 1 (everything before 24 Nov except B0) are `invalid (old protocol)` and must be rerun. Five model
+changes are implemented as `ModelSpec` flags, **off by default** until the dev sweep decides:
+masked audio pooling (0018), balanced valence loss (0019), log-mel audio (0020), augmentation (0021) and
+capacity (0022). The sweep trains each step of a ladder on split 0 with seeds 0, 1, 2. It is validation
+only: dev runs never read the test actors and never count in the paper.
+
+```bash
+./run dev u1          # U1 ladder: 6 steps x 3 seeds (minutes each)
+./run dev m3          # M3 ladder: 7 steps x 3 seeds (~20–40 min each on an RTX 4080)
+python scripts/dev_summary.py     # table (also runs/dev_summary.md); rerunning ./run dev skips finished runs
+```
+
+Then set the kept flags as the `ModelSpec` defaults in `mffer/models.py`, mark ADRs 0018–0022 Accepted or
+Rejected, commit, and run the paper experiments below.
+
 ### How to run
 
 From the repository root, one command per experiment, using the README IDs. No need to activate conda:
@@ -244,7 +267,7 @@ From the repository root, one command per experiment, using the README IDs. No n
 ./run u1        # U1 audio-only, splits 0, 1, 2
 ./run u2        # U2 video-only, splits 0, 1, 2
 ./run c1        # C1 M1, splits 0, 1, 2 (up to ~1.2 h each on the CPU)
-./run c2        # C2 M3, splits 0, 1, 2 (up to ~9.5 h each on the CPU; early stopping usually ends it sooner)
+./run c2        # C2 M3, splits 0, 1, 2 (up to ~9.5 h each on the Mac CPU, ~1.2 h on an RTX 4080; early stopping usually ends it sooner)
 ./run d1        # D1 (likewise d2, d3, d4), split 0 only
 ./run f1        # F1 FL-IID, splits 0, 1, 2 (M3; a round costs about one C2 epoch)
 ./run f2        # F2 FL-non-IID, splits 0, 1, 2
