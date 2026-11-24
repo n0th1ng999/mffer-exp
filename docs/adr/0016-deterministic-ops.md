@@ -70,3 +70,7 @@ things still let two runs of the same command differ:
   `-dirty`) so that its code can be checked out again.
 - A future op without a deterministic kernel fails loudly; the fix is another layer or op, not turning
   determinism off.
+- Bug fix, 24 Nov 2026: the training shuffle still used `seed + epoch`, so seed *s*'s epoch *e*+1 repeated
+  seed *s*+1's epoch *e* (a `--seed` variance check on one split reused one shuffle sequence, shifted by one
+  epoch). It now follows the rule above: `derive_seed(seed, epoch)` (`pipeline.make_dataset`). Batch order
+  of every centralised run changes; runs from before the fix are protocol 1 (see 0017).

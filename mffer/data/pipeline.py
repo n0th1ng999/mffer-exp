@@ -17,7 +17,7 @@ import tensorflow as tf
 
 from mffer.config import load_paths
 from mffer.data.cremad import EMOTIONS, VALENCES
-from mffer.models import AUDIO_SHAPE, DEMO_DIM, HEADS, TEXT_DIM, VIDEO_SHAPE, ModelSpec
+from mffer.models import AUDIO_SHAPE, DEMO_DIM, HEADS, TEXT_DIM, VIDEO_SHAPE, ModelSpec, derive_seed
 
 SENTENCES = ["DFA", "IEO", "IOM", "ITH", "ITS", "IWL", "IWW", "MTI", "TAI", "TIE", "TSI", "WSI"]
 assert len(SENTENCES) == TEXT_DIM
@@ -124,14 +124,14 @@ def _inputs(data: Cremad, rows: np.ndarray, spec: ModelSpec, stats: AudioStats) 
 
 def make_dataset(data: Cremad, rows: np.ndarray, spec: ModelSpec, stats: AudioStats, *,
                  training: bool, seed: int = 0, batch_size: int = 16, first_epoch: int = 0) -> tf.data.Dataset:
-    """Batches of (inputs, targets, sample_weights). Training: reshuffled each epoch with seed + epoch,
+    """Batches of (inputs, targets, sample_weights). Training: reshuffled each epoch with derive_seed(seed, epoch),
     counting from `first_epoch` (a resumed run passes the epochs already done, so it shuffles as an
     uninterrupted run would). Evaluation: in `rows` order, last batch may be smaller."""
     rows = np.asarray(rows)
     epochs = count(first_epoch)
 
     def batches():
-        order = np.random.default_rng(seed + next(epochs)).permutation(rows) if training else rows
+        order = np.random.default_rng(derive_seed(seed, next(epochs))).permutation(rows) if training else rows
         for start in range(0, len(order), batch_size):
             batch = order[start:start + batch_size]
             yield (_inputs(data, batch, spec, stats),

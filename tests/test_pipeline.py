@@ -98,6 +98,19 @@ def test_a_resumed_dataset_continues_the_shuffle_of_an_uninterrupted_one(data):
     assert np.array_equal(first(resumed), epochs[2])
 
 
+def test_shuffles_of_neighbouring_seeds_do_not_repeat_shifted_by_one_epoch(data):
+    """Shuffle seeds come from derive_seed(seed, epoch), not seed + epoch (ADR 0016): seed 1's epoch 0
+    must not replay seed 0's epoch 1."""
+    some = rows(data.clips, 0, "train")[:64]
+    stats = fit_stats(data, some)
+    def order(seed, epoch):
+        ds = make_dataset(data, some, PRESETS["audio_only"], stats, training=True, seed=seed, first_epoch=epoch,
+                          batch_size=len(some))
+        return next(iter(ds))[1]["displayed_emotion"].numpy()
+
+    assert not np.array_equal(order(1, 0), order(0, 1))
+
+
 def test_keras_trains_on_the_dataset_with_masked_heads(data):
     train = rows(data.clips, 0, "train")[:32]
     stats = fit_stats(data, train)
