@@ -18,6 +18,7 @@ ADR 0015. `MFFER_CPU=1` forces the CPU.
 """
 import argparse
 import json
+import os
 import platform
 import subprocess
 import time
@@ -52,9 +53,45 @@ class Reseed(keras.callbacks.Callback):
         reseed(self.model, derive_seed(self.seed, epoch))
 
 
+def save_atomic(path: Path, save) -> None:
+    """`save(tmp)` then rename: a crash mid-save never leaves a half-written file under `path`."""
+    tmp = path.with_name(f"tmp-{path.name}")
+    save(tmp)
+    os.replace(tmp, path)
+
+
+def save_checkpoint(run_dir: Path, done: int, suffix: str, save) -> None:
+    """The resume point after `done` epochs (or rounds), named `last-<done><suffix>` so the file itself says how
+    far it is; older resume points are removed after the new one is complete."""
+    path = run_dir / f"last-{done:03d}{suffix}"
+    save_atomic(path, save)
+    for old in run_dir.glob(f"last-*{suffix}"):
+        if old != path:
+            old.unlink()
+
+
+def load_history(run_dir: Path, suffix: str) -> tuple[pd.DataFrame, Path | None]:
+    """epochs.csv cut back to the latest resume point, and that point (None before the first one).
+
+    Each epoch appends its row first and saves its resume point second. A crash between the two leaves one
+    row more than the resume point holds; that row is dropped and the epoch runs again, which reproduces it
+    exactly (ADR 0016)."""
+    log_file = run_dir / "epochs.csv"
+    history = pd.read_csv(log_file) if log_file.exists() else pd.DataFrame()
+    points = sorted(run_dir.glob(f"last-*{suffix}"))
+    done = int(points[-1].name.removeprefix("last-").removesuffix(suffix)) if points else 0
+    assert len(history) >= done, f"{run_dir}: resume point after {done} epochs but epochs.csv has {len(history)}"
+    if len(history) > done:
+        print(f"epochs.csv has {len(history)} rows, the resume point {done}: dropping the rest and redoing them")
+        history = history.iloc[:done]
+        history.to_csv(log_file, index=False)
+    return history, points[-1] if points else None
+
+
 class EpochCheckpoint(keras.callbacks.Callback):
-    """After each epoch: save the full model (resume point), keep the best weights, stop after `patience`
-    epochs without improvement. State is rebuilt from epochs.csv on resume."""
+    """After each epoch: keep the best weights, save the full model (resume point), stop after `patience`
+    epochs without improvement. Runs after CSVLogger, so the epoch's row is written before its resume point
+    (see `load_history`). State is rebuilt from epochs.csv on resume."""
 
     def __init__(self, run_dir: Path, monitor: str, patience: int, history: pd.DataFrame):
         super().__init__()
@@ -67,10 +104,10 @@ class EpochCheckpoint(keras.callbacks.Callback):
         value = logs[self.monitor]
         if value > self.best:
             self.best, self.best_epoch, self.since_best = value, epoch, 0
-            self.model.save_weights(self.run_dir / "best.weights.h5")
+            save_atomic(self.run_dir / "best.weights.h5", self.model.save_weights)
         else:
             self.since_best += 1
-        self.model.save(self.run_dir / "last.keras")
+        save_checkpoint(self.run_dir, epoch + 1, ".keras", self.model.save)
         if self.since_best >= self.patience:
             self.model.stop_training = True
 
@@ -123,9 +160,9 @@ def run(run_dir: Path) -> dict:
     coverage = label_coverage(data, train, spec)
 
     log_file = run_dir / "epochs.csv"
-    history = pd.read_csv(log_file) if log_file.exists() else pd.DataFrame()
-    if len(history):
-        model = keras.models.load_model(run_dir / "last.keras")
+    history, last = load_history(run_dir, ".keras")
+    if last:
+        model = keras.models.load_model(last)
         print(f"resuming after epoch {len(history)}")
     else:
         model = build_model(spec, coverage=coverage)

@@ -42,7 +42,7 @@ from mffer.config import load_run_config
 from mffer.data.pipeline import AudioStats, Cremad, fit_stats, label_coverage, make_dataset
 from mffer.data.splits import client_rows, rows
 from mffer.models import build_model, compile_model, derive_seed, reseed, spec_from_config
-from mffer.train import DEFAULTS, new_run, print_test, score_test
+from mffer.train import DEFAULTS, load_history, new_run, print_test, save_atomic, save_checkpoint, score_test
 
 # ---------------------------------------------------------------- client (runs in a Flower/Ray worker)
 
@@ -126,14 +126,15 @@ def make_client_app(run_dir: Path):
 
 class RoundLog:
     """Server-side bookkeeping, the federated counterpart of train.EpochCheckpoint: after each round append
-    to epochs.csv, save the global weights, keep the best round's weights, stop after `patience` rounds
-    without improvement. State is rebuilt from epochs.csv on resume."""
+    to epochs.csv, keep the best round's weights, then save the global weights as the resume point
+    (`last-<round>.weights.h5`; see train.load_history), stop after `patience` rounds without improvement.
+    State is rebuilt from epochs.csv on resume."""
 
     def __init__(self, run_dir: Path, model: keras.Model, val: tf.data.Dataset, config: dict):
         self.run_dir, self.model, self.val = run_dir, model, val
         self.monitor, self.patience, self.max_rounds = config["monitor"], config["patience"], config["max_epochs"]
         self.file = run_dir / "epochs.csv"
-        history = pd.read_csv(self.file) if self.file.exists() else pd.DataFrame()
+        history, self.last = load_history(run_dir, ".weights.h5")
         self.done = len(history)
         self.best = history[self.monitor].max() if self.done else -np.inf
         self.best_round = int(history[self.monitor].idxmax()) if self.done else -1   # 0-based, as epochs.csv
@@ -153,11 +154,11 @@ class RoundLog:
         pd.DataFrame([row]).to_csv(self.file, mode="a", header=not self.file.exists(), index=False)
         if row[self.monitor] > self.best:
             self.best, self.best_round, self.since_best = row[self.monitor], self.done, 0
-            self.model.save_weights(self.run_dir / "best.weights.h5")
+            save_atomic(self.run_dir / "best.weights.h5", self.model.save_weights)
         else:
             self.since_best += 1
-        self.model.save_weights(self.run_dir / "last.weights.h5")
         self.done += 1
+        save_checkpoint(self.run_dir, self.done, ".weights.h5", self.model.save_weights)   # after the row
         print(f"round {self.done}: {self.monitor} {row[self.monitor]:.4f} (best {self.best:.4f}, round "
               f"{self.best_round + 1}), {row['round_seconds']:.0f} s", flush=True)
         self.started = time.perf_counter()
@@ -227,7 +228,7 @@ def run(run_dir: Path) -> dict:
     model = build_model(spec, coverage=label_coverage(data, train, spec))   # same initial weights as mffer.train
     log = RoundLog(run_dir, model, make_dataset(data, val, spec, stats, training=False), config)
     if log.done:
-        model.load_weights(run_dir / "last.weights.h5")
+        model.load_weights(log.last)
         print(f"resuming after round {log.done}")
     else:
         meta.update(parameters=model.count_params(), update_bytes=4 * model.count_params(),
