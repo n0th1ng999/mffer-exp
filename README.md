@@ -155,7 +155,7 @@ same split**, once, at the epoch (or round) chosen on validation. "×3" means th
 | Optimiser | Adam, learning rate 1e-4, batch 16, float32 |
 | Device | **CPU on macOS, CUDA on an NVIDIA GPU** (`mffer/device.py`, [ADR 0015](docs/adr/0015-cuda-allowed-metal-not.md)). On the Metal GPU (tensorflow-metal 1.2.0, TF 2.18 and 2.19) the same code, data and seed diverge after 3–4 epochs while the CPU trains cleanly (`scripts/lab_stability.py`), so Metal is always hidden and its runs never count. `MFFER_CPU=1` forces the CPU anywhere. `meta.json` records `device` (cpu / cuda) and the GPU model; a run is resumed only on the device it started on, and every federated client must train on the run's device |
 | Primary metric | **Valence macro-F1**, then displayed-intensity MAE, then perceived-intensity MAE ([ADR 0014](docs/adr/0014-primary-metric-valence-f1.md)). Macro, because always answering "negative" already scores 68% valence accuracy (macro-F1 0.27). Tables and pages list metrics in this order |
-| Budget | At most 90 epochs (or rounds; raised from 30 on 18 Nov, when best epochs landed at 25–29); early stopping with patience 10 on **val valence macro-F1**, never before epoch 20 (protocol 3, [ADR 0023](docs/adr/0023-minimum-epochs-before-early-stop.md); patience 5 with no minimum until 24 Nov) (until 19 Nov: val displayed-emotion accuracy; runs selected that way are `invalid (old monitor)`) |
+| Budget | At most 150 epochs (or rounds; 30 until 18 Nov, 90 until 24 Nov, raised each time when best epochs reached the cap); early stopping with patience 10 on **val valence macro-F1**, never before epoch 20 (protocol 3, [ADR 0023](docs/adr/0023-minimum-epochs-before-early-stop.md); patience 5 with no minimum until 24 Nov) (until 19 Nov: val displayed-emotion accuracy; runs selected that way are `invalid (old monitor)`) |
 | Seed | Weight-initialisation seed = split id (overridable with `--seed`). Every other seed derives from it (`models.derive_seed`): shuffle per epoch, dropout per epoch, federated dropout per client and round. Op determinism is on, so a rerun on the same device and packages is bit-identical (ADR 0016) |
 | Metrics | Macro-F1 and accuracy per classification head; MAE per intensity head against the constant predictor; macro-F1 and accuracy by sex; IEO ordering check (perceived intensity rises LO → MD → HI); parameters, minutes per epoch, FL update size (parameters × 4 bytes) |
 | Output | One run directory `runs/<config>-s<split>-<yyyymmdd-hhmm>/`: config, split, seed, git hash, hardware, `epochs.csv`, checkpoints, test predictions and metrics |
@@ -214,7 +214,7 @@ neighbouring steps is attributable to that one change.
 ### Federated and local-only — what does keeping data on the kiosk cost?
 
 All on the M3 model, the same test actors as C2, and equal compute: one round is one local epoch on every
-client, i.e. one pass over all training data, so 90 rounds match 90 centralised epochs. The server scores
+client, i.e. one pass over all training data, so 150 rounds match 150 centralised epochs. The server scores
 the global model on val after every round; test is scored once, at the val-selected round. Audio normalisation
 statistics are computed per client (raw data never leaves it); the server pools the clients' summary
 numbers (13 means, 13 stds, a count) exactly to score the global model. Each client also compensates loss weights with its own label
@@ -243,7 +243,7 @@ hold the same rows (`splits.client_rows`, seed = split id; tested).
 
 Every run records its `protocol` ([ADR 0017](docs/adr/0017-protocol-2-dev-runs.md)); the repository is at
 protocol **3** ([ADR 0023](docs/adr/0023-minimum-epochs-before-early-stop.md): no early stop before epoch 20,
-patience 10). Finished runs of an older protocol (everything before the protocol-3 commit except B0) are
+patience 10, at most 150 epochs). Finished runs of an older protocol (everything before the protocol-3 commit except B0) are
 `invalid (old protocol)` and must be rerun: under patience 5, F1–F4, L1 and U2 stopped at epoch 6 while the
 valence head still answered "negative" for every clip. Five model
 changes are implemented as `ModelSpec` flags, **off by default** until the dev sweep decides:

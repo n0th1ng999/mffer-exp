@@ -1,6 +1,6 @@
 # F2: FL-non-IID. M3, 2 clients, each holding different train actors (sex-balanced), FedAvg.
 # One round = one local epoch per client; rounds follow the same budget and stopping rule as epochs.
-# Training protocol (max_epochs 90, min_epochs 20, patience 10, monitor val_displayed_valence_macro_f1,
+# Training protocol (max_epochs 150, min_epochs 20, patience 10, monitor val_displayed_valence_macro_f1,
 # batch 16) comes from mffer.train.DEFAULTS and is identical for every configuration.
 name: f2_actor
 model:

@@ -50,4 +50,5 @@ def test_no_early_stop_before_min_epochs_even_with_a_flat_monitor():
     assert should_stop(done=20, since_best=19, config=DEFAULTS)
     assert not should_stop(done=30, since_best=9, config=DEFAULTS)
     assert should_stop(done=30, since_best=10, config=DEFAULTS)
-    assert should_stop(done=90, since_best=0, config=DEFAULTS)                          # budget spent
+    assert should_stop(done=DEFAULTS["max_epochs"], since_best=0, config=DEFAULTS)     # budget spent
+    assert DEFAULTS["max_epochs"] == 150

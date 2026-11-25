@@ -17,7 +17,10 @@ import statistics
 from datetime import datetime
 from pathlib import Path
 
+import yaml
+
 from mffer.report import load_runs as report_runs
+from mffer.train import DEFAULTS
 
 ROOT = Path(__file__).resolve().parent.parent
 RUN_DIR = re.compile(r"^(?P<config>.+)-s(?P<split>\d)-(?P<stamp>\d{8}-\d{4})$")
@@ -88,7 +91,10 @@ def load_runs() -> list[dict]:
         eid, desc = EXPERIMENTS.get(match["config"], (match["config"], ""))
         run = {"dir": path.name, "config": match["config"], "id": eid, "desc": desc,
                "split": int(match["split"]), "stamp": match["stamp"], "test": None, "best_epoch": None,
-               "epochs": {}, "meta": {}, "confusion": {}}
+               "epochs": {}, "meta": {}, "confusion": {}, "max_epochs": DEFAULTS["max_epochs"]}
+        if (path / "config.yaml").exists():
+            run["max_epochs"] = (yaml.safe_load((path / "config.yaml").read_text()) or {}).get("max_epochs",
+                                                                                               run["max_epochs"])
         if (path / "epochs.csv").exists():
             with open(path / "epochs.csv") as f:
                 table = list(csv.DictReader(f))
@@ -513,7 +519,7 @@ function render(dir) {
   state.run = run; state.hover = null;
   const n = (run.epochs.loss || []).length; state.from = 1; state.to = Math.max(n, 1);
   const t = run.test || {}, meta = run.meta || {};
-  const stopped = run.best_epoch && n ? (n < 90 ? `stopped early after ${n - run.best_epoch} epochs without improvement` : "ran the full 90 epochs") : "";
+  const stopped = run.best_epoch && n ? (n < run.max_epochs ? `stopped early after ${n - run.best_epoch} epochs without improvement` : `ran the full ${run.max_epochs} epochs`) : "";
   let h = `<div class="head"><h2>${run.id} · split ${run.split}</h2><span class="badge ${run.state}">${run.status}</span>
     <code>runs/${esc(run.dir)}</code>${run.warning ? `<span class="flag">⚠ ${esc(run.warning)}</span>` : ""}</div>
     <div class="facts"><span>${esc(run.desc)}</span>

@@ -1,6 +1,6 @@
 # F3: FL-non-IID with more clients. Like F2 (M3, FedAvg, clients hold different train actors) but 4 clients,
 # about 16 train actors each: does the gap to C2 grow as each kiosk sees fewer people?
-# Training protocol (max_epochs 90, min_epochs 20, patience 10, monitor val_displayed_valence_macro_f1,
+# Training protocol (max_epochs 150, min_epochs 20, patience 10, monitor val_displayed_valence_macro_f1,
 # batch 16) comes from mffer.train.DEFAULTS and is identical for every configuration.
 name: f3_actor4
 model:

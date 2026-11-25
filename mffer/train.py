@@ -39,11 +39,11 @@ from mffer.data.splits import client_rows, rows
 from mffer.metrics import MONITOR, compute, predictions_table
 from mffer.models import build_model, derive_seed, reseed, spec_from_config
 
-# protocol: 3 since 24 Nov 2026 (ADR 0023: min_epochs, patience 10); finished runs of an older protocol are
+# protocol: 3 since 24 Nov 2026 (ADR 0023: min_epochs 20, patience 10, max_epochs 150); finished runs of an older protocol are
 # "invalid (old protocol)". score_test: false for dev runs (configs/dev): they stop at validation and never
 # touch the test actors.
 PROTOCOL = 3
-DEFAULTS = {"max_epochs": 90, "min_epochs": 20, "patience": 10, "monitor": MONITOR, "batch_size": 16,
+DEFAULTS = {"max_epochs": 150, "min_epochs": 20, "patience": 10, "monitor": MONITOR, "batch_size": 16,
             "protocol": PROTOCOL, "score_test": True}
 
 

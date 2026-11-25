@@ -1,5 +1,5 @@
 # C1: M1 audio-visual baseline, concatenation fusion
-# Training protocol (max_epochs 90, min_epochs 20, patience 10, monitor val_displayed_valence_macro_f1,
+# Training protocol (max_epochs 150, min_epochs 20, patience 10, monitor val_displayed_valence_macro_f1,
 # batch 16) comes from mffer.train.DEFAULTS and is identical for every configuration.
 name: c1_m1
 model:

@@ -15,7 +15,7 @@ Rules:
 | [0001](0001-cpu-only-training.md) | Train on the CPU only; GPU runs are invalid | Accepted, 18 Nov 2026; CPU-only superseded by 0015 |
 | [0002](0002-frozen-actor-splits.md) | Three frozen actor-grouped, sex-stratified splits; seed = split id | Accepted, 18 Nov 2026 |
 | [0003](0003-test-once-val-selected.md) | Early stopping on val; test scored once with the best weights | Accepted, 18 Nov 2026; metric superseded by 0014 |
-| [0004](0004-training-budget-90.md) | Budget of 90 epochs (or rounds), patience 5, for every configuration | Accepted, 18 Nov 2026; metric superseded by 0014; patience amended by 0023 |
+| [0004](0004-training-budget-90.md) | Budget of 90 epochs (or rounds), patience 5, for every configuration | Accepted, 18 Nov 2026; metric superseded by 0014; patience and budget amended by 0023 |
 | [0005](0005-one-model-builder.md) | One model builder; every configuration is a preset of flags | Accepted, 18 Nov 2026 |
 | [0006](0006-masked-heads-coverage.md) | Missing labels masked per head; loss weight divided by label coverage | Accepted, 18 Nov 2026 |
 | [0007](0007-fl-round-protocol.md) | FL: one local epoch per round, fresh Adam per round, server-side val | Accepted, 19 Nov 2026 |
@@ -34,4 +34,4 @@ Rules:
 | [0020](0020-logmel-audio.md) | Log-mel audio features with a 2-D conv encoder | Proposed, 24 Nov 2026 (dev sweep) |
 | [0021](0021-deterministic-augmentation.md) | Deterministic training-time augmentation | Proposed, 24 Nov 2026 (dev sweep) |
 | [0022](0022-model-capacity.md) | Model capacity (width, visual blocks) chosen on validation | Proposed, 24 Nov 2026 (dev sweep) |
-| [0023](0023-minimum-epochs-before-early-stop.md) | Protocol 3: no early stop before 20 epochs (or rounds), patience 10 | Accepted, 24 Nov 2026 |
+| [0023](0023-minimum-epochs-before-early-stop.md) | Protocol 3: no early stop before 20 epochs (or rounds), patience 10, budget 150 | Accepted, 24 Nov 2026 |

@@ -11,6 +11,7 @@ import yaml
 from mffer.data.pipeline import Cremad, fit_stats, label_coverage, make_dataset
 from mffer.data.splits import rows
 from mffer.models import PRESETS, build_model
+from mffer.train import DEFAULTS
 
 
 def main() -> None:
@@ -41,7 +42,7 @@ def main() -> None:
 
     print(f"{args.preset} {args.set}: reading {read:.3f} s/batch, training {step:.3f} s/step (reading overlapped)")
     print(f"-> one epoch of {steps_per_epoch} steps ≈ {step * steps_per_epoch / 60:.1f} min; "
-          f"90 epochs at most ≈ {90 * step * steps_per_epoch / 3600:.1f} h")
+          f"{DEFAULTS['max_epochs']} epochs at most ≈ {DEFAULTS['max_epochs'] * step * steps_per_epoch / 3600:.1f} h")
 
 
 if __name__ == "__main__":
