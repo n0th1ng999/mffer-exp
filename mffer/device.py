@@ -4,6 +4,8 @@
   the CPU trains cleanly with the same code, data and seed (scripts/lab_stability.py, ADR 0001).
 - Linux / WSL2 with an NVIDIA GPU: CUDA, with memory growth so the Flower server and client processes can
   share the card. `MFFER_CPU=1` forces the CPU (e.g. to compare a CUDA run with a CPU run).
+  `MFFER_GPU_MB=<n>` caps this process at n MB of GPU memory instead, for parallel runs: under WSL2 two
+  growing processes fill the card and spill into shared system memory, which slowed two T1 runs ~8x (25 Nov).
 
 Every run records its device in meta.json (`device`: cpu | cuda | metal); the reporter never counts metal,
 and a run must be resumed on the device it started on.
@@ -27,8 +29,13 @@ def configure() -> str:
         if sys.platform == "darwin" or os.environ.get("MFFER_CPU") == "1":
             tf.config.set_visible_devices([], "GPU")
         else:
+            limit = os.environ.get("MFFER_GPU_MB")
             for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
+                if limit:
+                    tf.config.set_logical_device_configuration(
+                        gpu, [tf.config.LogicalDeviceConfiguration(memory_limit=int(limit))])
+                else:
+                    tf.config.experimental.set_memory_growth(gpu, True)
     except RuntimeError:   # devices already initialised in this process: current() reports what is in use
         pass
     return current()
