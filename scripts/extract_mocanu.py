@@ -104,7 +104,7 @@ class ResNet3D(nn.Module):
 
 def video_encoder(device) -> ResNet3D:
     model = ResNet3D()
-    state = torch.load(WEIGHTS, map_location="cpu", weights_only=False)
+    state = torch.load(WEIGHTS, map_location="cpu", weights_only=True)   # sha256 328230bb...
     model.load_state_dict(state["state_dict"] if "state_dict" in state else state, strict=True)
     return model.eval().to(device)
 

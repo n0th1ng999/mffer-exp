@@ -25,7 +25,6 @@ from mffer.data.cremad import EMOTIONS, VALENCES
 from mffer.models import (
     AUDIO_SHAPES,
     DEMO_DIM,
-    HEADS,
     MOCANU_AUDIO,
     MOCANU_VIDEO,
     TEXT_DIM,
@@ -255,7 +254,7 @@ def make_dataset(data: Cremad, rows: np.ndarray, spec: ModelSpec, stats: AudioSt
         x_sig["text"] = tf.TensorSpec((None, TEXT_DIM), tf.float32)
     if spec.demographics:
         x_sig["demographics"] = tf.TensorSpec((None, DEMO_DIM), tf.float32)
-    y_sig = {h: tf.TensorSpec((None, HEADS[h][0]), tf.float32) for h in spec.heads}
+    y_sig = {h: tf.TensorSpec((None, data.targets[h].shape[1]), tf.float32) for h in spec.heads}   # B: embedding head, emotion target
     w_sig = {h: tf.TensorSpec((None,), tf.float32) for h in spec.heads}
 
     def to_float(x, y, w):
