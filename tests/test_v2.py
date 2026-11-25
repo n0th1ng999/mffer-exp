@@ -105,3 +105,18 @@ def test_single_task_model_gets_valence_from_its_emotion_and_the_score_averages_
     expected = np.mean([np.mean([parts["cremad_displayed_valence_macro_f1"], parts["ravdess_displayed_valence_macro_f1"]]),
                         np.mean([parts["cremad_displayed_emotion_macro_f1"], parts["ravdess_displayed_emotion_macro_f1"]])])
     assert parts["score"] == pytest.approx(expected)
+
+
+@needs_v2
+def test_new_kiosk_rows_train_on_one_corpus_and_test_on_the_other(clips):
+    from types import SimpleNamespace
+
+    from mffer.train import corpus_rows
+    parts = [rows(clips, 0, p, "v2") for p in FRACTIONS]
+    train, val, test = corpus_rows(SimpleNamespace(clips=clips), *parts, {"train": "ravdess", "test": "cremad"})
+    assert set(clips.corpus.iloc[train]) == set(clips.corpus.iloc[val]) == {"ravdess"}
+    assert set(clips.corpus.iloc[test]) == {"cremad"}
+    assert not set(clips.actor_id.iloc[test]) & set(clips.actor_id.iloc[train])
+    assert set(test) <= set(parts[2])   # the same test actors as T1, never other CREMA-D actors
+    with pytest.raises(AssertionError):
+        corpus_rows(SimpleNamespace(clips=clips), *parts, {"train": "cremad", "test": "cremad"})

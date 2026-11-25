@@ -1,0 +1,10 @@
+# T3a, FL with real non-IID data: FedAvg, one client per corpus (CREMA-D kiosk, RAVDESS kiosk), model B (Mocanu et al. 2023, frozen encoders).
+# One round = one local epoch per client; rounds follow protocol 4 (ADR 0026) like epochs. Same val and test
+# actors as T1, so T3a vs T1 is the price of keeping each corpus's data on its own kiosk.
+name: t3a_fedavg_b
+dataset: v2
+model:
+  preset: mocanu
+federated:
+  clients: 2
+  partition: corpus

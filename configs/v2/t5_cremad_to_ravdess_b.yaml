@@ -1,0 +1,10 @@
+# T5, a new kiosk: model B (Mocanu et al. 2023, frozen encoders) trained and selected (val) on cremad's actors only, tested on ravdess's test
+# actors (never seen in training; ADR 0027). Compare with T1's ravdess test scores: the price of not having
+# that kiosk's data at all.
+name: t5_cremad_to_ravdess_b
+dataset: v2
+model:
+  preset: mocanu
+corpus:
+  train: cremad
+  test: ravdess

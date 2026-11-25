@@ -1,0 +1,10 @@
+# T3b, the control for T3a: FedAvg with k = 5 clients holding random whole actors of both corpora
+# (sex-stratified round-robin, seed = split id), model A (CNN, D2). Near-IID: compared with T3a it isolates the cost
+# of non-IID data; across k = 2, 5, 10 the cost of more, smaller kiosks. Run last.
+name: t3b_k5_a
+dataset: v2
+model:
+  preset: d2
+federated:
+  clients: 5
+  partition: actor

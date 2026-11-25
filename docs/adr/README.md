@@ -38,3 +38,4 @@ Rules:
 | [0024](0024-v2-data-contract.md) | V2 data contract: CREMA-D + RAVDESS, aligned faces, audio and frames inside the speech | Accepted, 25 Nov 2026 |
 | [0025](0025-model-b-mocanu-frozen.md) | Model B: Mocanu et al. (2023) on frozen pretrained encoders | Accepted, 25 Nov 2026 |
 | [0026](0026-protocol-4-selection-score.md) | Protocol 4: select on the mean of valence and emotion macro-F1 per corpus | Accepted, 25 Nov 2026 |
+| [0027](0027-v2-federated-and-new-kiosk-tests.md) | V2 tests after T1: FedAvg per corpus (T3a), random actor clients (T3b), new kiosk (T5) | Accepted, 25 Nov 2026 |

@@ -1,0 +1,10 @@
+# T5, a new kiosk: model A (CNN, D2) trained and selected (val) on cremad's actors only, tested on ravdess's test
+# actors (never seen in training; ADR 0027). Compare with T1's ravdess test scores: the price of not having
+# that kiosk's data at all.
+name: t5_cremad_to_ravdess_a
+dataset: v2
+model:
+  preset: d2
+corpus:
+  train: cremad
+  test: ravdess

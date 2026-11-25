@@ -55,6 +55,15 @@ def should_stop(done: int, since_best: int, config: dict) -> bool:
     return done >= config["max_epochs"] or (done >= config.get("min_epochs", 0) and since_best >= config["patience"])
 
 
+def corpus_rows(data: Cremad, train: np.ndarray, val: np.ndarray, test: np.ndarray,
+                corpus: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """T5, a new kiosk (ADR 0027): `corpus: {train: cremad, test: ravdess}` trains and selects (val) on the split's
+    actors of one corpus only and tests on the split's test actors of the other, which training never saw."""
+    of = data.clips["corpus"].to_numpy()
+    assert corpus["train"] != corpus["test"], "T5 tests on a corpus it did not train on"
+    return (train[of[train] == corpus["train"]], val[of[val] == corpus["train"]], test[of[test] == corpus["test"]])
+
+
 def val_scorer(data: Cremad, val: np.ndarray, spec, stats: AudioStats):
     """`scorer(model)` -> the validation selection score and its per-corpus parts, as `val_*` log entries."""
     dataset = make_dataset(data, val, spec, stats, training=False)
@@ -193,6 +202,8 @@ def run(run_dir: Path) -> dict:
     if "local" in config:
         local = config["local"]
         train = client_rows(data.clips, meta["split"], local["clients"], local["partition"], dataset)[local["client"]]
+    if "corpus" in config:
+        train, val, test = corpus_rows(data, train, val, test, config["corpus"])
 
     stats_file = run_dir / "audio_stats.json"
     if not stats_file.exists():
