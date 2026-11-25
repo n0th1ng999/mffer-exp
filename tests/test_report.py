@@ -4,7 +4,7 @@ import json
 import pytest
 import yaml
 
-from mffer.metrics import MONITOR
+from mffer.metrics import SCORE as MONITOR
 from mffer.report import load_runs, per_split, results_table
 from mffer.train import PROTOCOL
 

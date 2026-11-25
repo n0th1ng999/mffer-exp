@@ -52,6 +52,7 @@ from mffer.train import (
     score_test,
     score_val,
     should_stop,
+    val_scorer,
 )
 
 # ---------------------------------------------------------------- client (runs in a Flower/Ray worker)
@@ -76,10 +77,11 @@ class ProxModel(keras.Model):
 
 
 def _client_state(run_dir: Path) -> dict:
-    if "data" not in _cache:
-        _cache["data"] = Cremad()
     if _cache.get("run_dir") != run_dir:
         config = yaml.safe_load((run_dir / "config.yaml").read_text())
+        dataset = config.get("dataset", "cremad")
+        if _cache.get("dataset") != dataset:
+            _cache.update(data=Cremad(dataset=dataset), dataset=dataset)
         spec = spec_from_config(config["model"])
         model = build_model(spec)
         if config["federated"].get("mu"):
@@ -93,7 +95,7 @@ def client_fit(run_dir: Path, client: int, parameters: list[np.ndarray], round_:
     state = _client_state(run_dir)
     data, config, spec, model, meta = (state[k] for k in ("data", "config", "spec", "model", "meta"))
     fed = config["federated"]
-    own = client_rows(data.clips, meta["split"], fed["clients"], fed["partition"])[client]
+    own = client_rows(data.clips, meta["split"], fed["clients"], fed["partition"], state["dataset"])[client]
     stats = AudioStats.load(run_dir / f"audio_stats_c{client}.json")
 
     start = time.perf_counter()
@@ -140,8 +142,8 @@ class RoundLog:
     (`last-<round>.weights.h5`; see train.load_history), stop by train.should_stop.
     State is rebuilt from epochs.csv on resume."""
 
-    def __init__(self, run_dir: Path, model: keras.Model, val: tf.data.Dataset, config: dict):
-        self.run_dir, self.model, self.val = run_dir, model, val
+    def __init__(self, run_dir: Path, model: keras.Model, val: tf.data.Dataset, config: dict, scorer=None):
+        self.run_dir, self.model, self.val, self.scorer = run_dir, model, val, scorer
         self.config, self.monitor = config, config["monitor"]
         self.file = run_dir / "epochs.csv"
         history, self.last = load_history(run_dir, ".weights.h5")
@@ -160,7 +162,7 @@ class RoundLog:
         self.model.set_weights(weights)
         val = self.model.evaluate(self.val, verbose=0, return_dict=True)
         row = {"epoch": self.done, **self.train_metrics, **{f"val_{k}": float(v) for k, v in val.items()},
-               "round_seconds": time.perf_counter() - self.started}
+               **(self.scorer(self.model) if self.scorer else {}), "round_seconds": time.perf_counter() - self.started}
         pd.DataFrame([row]).to_csv(self.file, mode="a", header=not self.file.exists(), index=False)
         if row[self.monitor] > self.best:
             self.best, self.best_round, self.since_best = row[self.monitor], self.done, 0
@@ -224,9 +226,10 @@ def run(run_dir: Path) -> dict:
     fed = config["federated"]
     keras.utils.set_random_seed(meta["seed"])
     spec = spec_from_config(config["model"])
-    data = Cremad()
-    train, val, test = (rows(data.clips, meta["split"], p) for p in ("train", "val", "test"))
-    clients = client_rows(data.clips, meta["split"], fed["clients"], fed["partition"])
+    dataset = config.get("dataset", "cremad")
+    data = Cremad(dataset=dataset)
+    train, val, test = (rows(data.clips, meta["split"], p, dataset) for p in ("train", "val", "test"))
+    clients = client_rows(data.clips, meta["split"], fed["clients"], fed["partition"], dataset)
 
     # Each client's statistics come from its own rows; the server only pools the summaries.
     for k, own in enumerate(clients):
@@ -236,12 +239,14 @@ def run(run_dir: Path) -> dict:
     stats.save(run_dir / "audio_stats.json")
 
     model = build_model(spec, coverage=label_coverage(data, train, spec))   # same initial weights as mffer.train
-    log = RoundLog(run_dir, model, make_dataset(data, val, spec, stats, training=False), config)
+    scorer = val_scorer(data, val, spec, stats)
+    log = RoundLog(run_dir, model, make_dataset(data, val, spec, stats, training=False), config, scorer)
     if log.done:
         model.load_weights(log.last)
         print(f"resuming after round {log.done}")
     else:
         meta.update(parameters=model.count_params(), update_bytes=4 * model.count_params(),
+                    model_bytes=4 * model.count_params(), train_clips=len(train),
                     clients=[{"clips": len(c), "actors": int(data.clips.actor_id.iloc[c].nunique()),
                               **({"valence_class_weights": valence_class_weights(data, c)} if spec.balance_valence
                                  else {})} for c in clients],
@@ -263,7 +268,7 @@ def run(run_dir: Path) -> dict:
         )
         meta["train_minutes"] = meta.get("train_minutes", 0) + (time.perf_counter() - start) / 60
         # Flower may log a server error instead of raising it: check the outcome before scoring test.
-        log = RoundLog(run_dir, model, log.val, config)
+        log = RoundLog(run_dir, model, log.val, config, scorer)
         if not log.finished or not (run_dir / "best.weights.h5").exists():
             raise SystemExit(f"simulation ended after {log.done} of {config['max_epochs']} rounds without "
                              f"early stopping: see the Flower log above; continue with --resume {run_dir}")

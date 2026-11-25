@@ -36,15 +36,16 @@ from mffer.config import ROOT, load_paths, load_run_config
 from mffer.data.cremad import VALENCES
 from mffer.data.pipeline import AudioStats, Cremad, fit_stats, label_coverage, make_dataset, valence_class_weights
 from mffer.data.splits import client_rows, rows
-from mffer.metrics import MONITOR, compute, predictions_table
+from mffer.metrics import MONITOR, SCORE, compute, predictions_table, score
 from mffer.models import build_model, derive_seed, reseed, spec_from_config
 
-# protocol: 3 since 24 Nov 2026 (ADR 0023: min_epochs 20, patience 10, max_epochs 150); finished runs of an older protocol are
+# protocol: 4 since 25 Nov 2026 (ADR 0026: monitor val_score, the mean of valence and emotion macro-F1 per corpus;
+# ADR 0023 still sets min_epochs 20, patience 10, max_epochs 150); finished runs of an older protocol are
 # "invalid (old protocol)". score_test: false for dev runs (configs/dev): they stop at validation and never
-# touch the test actors.
-PROTOCOL = 3
-DEFAULTS = {"max_epochs": 150, "min_epochs": 20, "patience": 10, "monitor": MONITOR, "batch_size": 16,
-            "protocol": PROTOCOL, "score_test": True}
+# touch the test actors. dataset: "cremad" (V1) or "v2" (CREMA-D + RAVDESS, ADR 0024).
+PROTOCOL = 4
+DEFAULTS = {"max_epochs": 150, "min_epochs": 20, "patience": 10, "monitor": SCORE, "batch_size": 16,
+            "protocol": PROTOCOL, "score_test": True, "dataset": "cremad"}
 
 
 def should_stop(done: int, since_best: int, config: dict) -> bool:
@@ -52,6 +53,28 @@ def should_stop(done: int, since_best: int, config: dict) -> bool:
     at least `min_epochs` are done and the monitor has not improved for `patience` of them. The minimum keeps
     early stopping from ending a run while valence still predicts the majority class (flat monitor)."""
     return done >= config["max_epochs"] or (done >= config.get("min_epochs", 0) and since_best >= config["patience"])
+
+
+def val_scorer(data: Cremad, val: np.ndarray, spec, stats: AudioStats):
+    """`scorer(model)` -> the validation selection score and its per-corpus parts, as `val_*` log entries."""
+    dataset = make_dataset(data, val, spec, stats, training=False)
+
+    def scorer(model: keras.Model) -> dict[str, float]:
+        table = predictions_table(data.clips, val, data.targets, data.weights, model.predict(dataset, verbose=0))
+        return {f"val_{key}": value for key, value in score(table).items()}
+    return scorer
+
+
+class ValScore(keras.callbacks.Callback):
+    """Adds `val_score` (protocol 4's monitor) and its parts to the epoch's logs. First in the callback list, so
+    CSVLogger writes them and EpochCheckpoint selects on them."""
+
+    def __init__(self, scorer):
+        super().__init__()
+        self.scorer = scorer
+
+    def on_epoch_end(self, epoch, logs=None):
+        logs.update(self.scorer(self.model))
 
 
 class Reseed(keras.callbacks.Callback):
@@ -164,11 +187,12 @@ def run(run_dir: Path) -> dict:
     device.check_resume(meta)
     keras.utils.set_random_seed(meta["seed"])
     spec = spec_from_config(config["model"])
-    data = Cremad()
-    train, val, test = (rows(data.clips, meta["split"], p) for p in ("train", "val", "test"))
+    dataset = config.get("dataset", "cremad")
+    data = Cremad(dataset=dataset)
+    train, val, test = (rows(data.clips, meta["split"], p, dataset) for p in ("train", "val", "test"))
     if "local" in config:
         local = config["local"]
-        train = client_rows(data.clips, meta["split"], local["clients"], local["partition"])[local["client"]]
+        train = client_rows(data.clips, meta["split"], local["clients"], local["partition"], dataset)[local["client"]]
 
     stats_file = run_dir / "audio_stats.json"
     if not stats_file.exists():
@@ -183,7 +207,9 @@ def run(run_dir: Path) -> dict:
         print(f"resuming after epoch {len(history)}")
     else:
         model = build_model(spec, coverage=coverage)
-        meta.update(parameters=model.count_params(), coverage=coverage,
+        meta.update(parameters=model.count_params(), model_bytes=4 * model.count_params(),
+                    trainable_parameters=int(sum(np.prod(w.shape) for w in model.trainable_weights)),
+                    train_clips=len(train), coverage=coverage,
                     loss_weights_applied={h: w / coverage[h] for h, w in spec.loss_weights.items()})
         if spec.balance_valence:
             meta["valence_class_weights"] = dict(zip(VALENCES, valence_class_weights(data, train), strict=True))
@@ -196,7 +222,8 @@ def run(run_dir: Path) -> dict:
                                batch_size=config["batch_size"], first_epoch=len(history)),
                   validation_data=make_dataset(data, val, spec, stats, training=False),
                   epochs=config["max_epochs"], initial_epoch=len(history), verbose=2, shuffle=False,  # pipeline shuffles
-                  callbacks=[Reseed(meta["seed"]), keras.callbacks.CSVLogger(log_file, append=True), checkpoint])
+                  callbacks=[ValScore(val_scorer(data, val, spec, stats)), Reseed(meta["seed"]),
+                             keras.callbacks.CSVLogger(log_file, append=True), checkpoint])
         meta["train_minutes"] = meta.get("train_minutes", 0) + (time.perf_counter() - start) / 60
 
     if not config.get("score_test", True):
@@ -220,7 +247,7 @@ def print_result(result: dict) -> None:
         return print_test(result["test"])
     val = result["val_at_best"]
     print(f"dev run, best epoch {result['best_epoch']} of {result['epochs_run']} (test not scored):")
-    for key in (MONITOR, "val_displayed_intensity_mae", "val_perceived_intensity_mae",
+    for key in (SCORE, MONITOR, "val_displayed_intensity_mae", "val_perceived_intensity_mae",
                 "val_displayed_emotion_macro_f1", "val_perceived_emotion_macro_f1"):
         if key in val:
             print(f"  {key}: {val[key]:.4f}")
@@ -231,7 +258,9 @@ def score_test(run_dir: Path, model: keras.Model, data: Cremad, test: np.ndarray
     """Score the test rows once, with the best epoch's (or round's) weights; write predictions.csv,
     test.json and the finish time. `best_epoch` is 0-based, as in epochs.csv."""
     model.load_weights(run_dir / "best.weights.h5")
+    start = time.perf_counter()
     outputs = model.predict(make_dataset(data, test, spec, stats, training=False), verbose=0)
+    meta["inference_ms_per_clip"] = 1000 * (time.perf_counter() - start) / len(test)   # incl. reading inputs (T6)
     table = predictions_table(data.clips, test, data.targets, data.weights, outputs)
     table.to_csv(run_dir / "predictions.csv", index=False)
     history = pd.read_csv(run_dir / "epochs.csv")

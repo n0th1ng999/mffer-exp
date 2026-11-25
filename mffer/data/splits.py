@@ -34,16 +34,22 @@ def make_split(actors: pd.DataFrame, seed: int) -> dict[str, list[int]]:
     return {name: sorted(int(a) for a in ids) for name, ids in parts.items()}
 
 
-def load_split(split_id: int) -> dict:
-    split = json.loads((load_paths().splits / f"split_{split_id}.json").read_text())
+def split_file(split_id: int, dataset: str = "cremad"):
+    """V1 splits in splits/, V2 (CREMA-D + RAVDESS, mffer.data.v2) in splits/v2/."""
+    folder = load_paths().splits / ("v2" if dataset == "v2" else "")
+    return folder / f"split_{split_id}.json"
+
+
+def load_split(split_id: int, dataset: str = "cremad") -> dict:
+    split = json.loads(split_file(split_id, dataset).read_text())
     parts = [set(split[p]) for p in FRACTIONS]
     assert all(not (a & b) for i, a in enumerate(parts) for b in parts[i + 1:]), "an actor is in two parts"
     return split
 
 
-def rows(clips: pd.DataFrame, split_id: int, part: str) -> np.ndarray:
+def rows(clips: pd.DataFrame, split_id: int, part: str, dataset: str = "cremad") -> np.ndarray:
     """Row indices (into clips.csv / cremad.h5) of the clips whose actor is in `part` of the split."""
-    return np.flatnonzero(clips["actor_id"].isin(load_split(split_id)[part]).to_numpy())
+    return np.flatnonzero(clips["actor_id"].isin(load_split(split_id, dataset)[part]).to_numpy())
 
 
 def partition(clips: pd.DataFrame, train_rows: np.ndarray, n_clients: int, mode: str, seed: int) -> list[np.ndarray]:
@@ -51,6 +57,8 @@ def partition(clips: pd.DataFrame, train_rows: np.ndarray, n_clients: int, mode:
 
     mode "iid": clips are shuffled and dealt round-robin, so clients hold similar data.
     mode "actor": whole actors are dealt round-robin within each sex, so clients hold different people.
+    mode "corpus": one client per corpus (V2: CREMA-D, RAVDESS), the natural non-IID partition (T3a);
+    `n_clients` must equal the number of corpora.
     """
     rng = np.random.default_rng(seed)
     if mode == "iid":
@@ -64,13 +72,19 @@ def partition(clips: pd.DataFrame, train_rows: np.ndarray, n_clients: int, mode:
                 owner[int(actor)] = i % n_clients
         client = clips.iloc[train_rows]["actor_id"].map(owner).to_numpy()
         return [train_rows[client == i] for i in range(n_clients)]
+    if mode == "corpus":
+        corpus = clips.iloc[train_rows]["corpus"].to_numpy()
+        names = sorted(set(corpus))
+        assert len(names) == n_clients, f"partition corpus: {len(names)} corpora {names}, {n_clients} clients"
+        return [train_rows[corpus == name] for name in names]
     raise ValueError(f"unknown partition mode: {mode}")
 
 
-def client_rows(clips: pd.DataFrame, split_id: int, n_clients: int, mode: str) -> list[np.ndarray]:
+def client_rows(clips: pd.DataFrame, split_id: int, n_clients: int, mode: str,
+                dataset: str = "cremad") -> list[np.ndarray]:
     """The training rows of each client of `split_id`. The one place a client's data is defined, so a
     local-only client (L1) holds exactly the rows of the same federated client (F2): seed = split id."""
-    return partition(clips, rows(clips, split_id, "train"), n_clients, mode, seed=split_id)
+    return partition(clips, rows(clips, split_id, "train", dataset), n_clients, mode, seed=split_id)
 
 
 def main() -> None:

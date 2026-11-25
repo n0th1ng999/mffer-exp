@@ -1,0 +1,7 @@
+# T1.1, model A: our CNN (D2: audio MFCC + deep visual CNN/BiLSTM + modality gates), multi-task, from scratch.
+# V2 data (ADR 0024). Protocol 4 (ADR 0026: monitor val_score; min 20, patience 10, max 150 epochs; batch 16)
+# comes from mffer.train.DEFAULTS and is identical for every configuration.
+name: t1_a
+dataset: v2
+model:
+  preset: d2

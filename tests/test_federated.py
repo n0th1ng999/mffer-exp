@@ -14,7 +14,7 @@ def batch(n=32):
     rng = np.random.default_rng(0)
     x = {"audio": rng.standard_normal((n, *AUDIO_SHAPE), dtype=np.float32)}
     y = {h: (np.eye(u, dtype=np.float32)[rng.integers(0, u, n)] if u > 1 else rng.random((n, 1), dtype=np.float32))
-         for h, (u, _, _) in HEADS.items()}
+         for h, (u, _, _) in HEADS.items() if h in SPEC.heads}
     return x, y
 
 

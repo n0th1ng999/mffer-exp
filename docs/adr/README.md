@@ -25,7 +25,7 @@ Rules:
 | [0011](0011-generated-paper-numbers.md) | Paper numbers come only from counted run directories | Accepted, 19 Nov 2026 |
 | [0012](0012-fedprox-untuned-mu.md) | FedProx with μ = 0.01, not tuned | Accepted, 19 Nov 2026 |
 | [0013](0013-lint-no-formatter.md) | Lint with ruff, no auto-formatter; hooks outside the experiment env | Accepted, 19 Nov 2026 |
-| [0014](0014-primary-metric-valence-f1.md) | Primary metric valence macro-F1, then displayed and perceived intensity MAE; it picks the epoch | Accepted, 19 Nov 2026 |
+| [0014](0014-primary-metric-valence-f1.md) | Primary metric valence macro-F1, then displayed and perceived intensity MAE; it picks the epoch | Accepted, 19 Nov 2026; selection superseded by 0026 |
 | [0015](0015-cuda-allowed-metal-not.md) | Train on CUDA where available; Metal stays hidden; device recorded and checked | Accepted, 19 Nov 2026; CUDA checked 20 Nov; non-determinism superseded by 0016 |
 | [0016](0016-deterministic-ops.md) | Every run is deterministic: op determinism, explicit dropout seeds, exact resume, ordered FedAvg | Accepted, 20 Nov 2026 |
 | [0017](0017-protocol-2-dev-runs.md) | Protocol 2: versioned runs; model changes chosen on validation-only dev runs | Accepted, 24 Nov 2026 |
@@ -35,3 +35,6 @@ Rules:
 | [0021](0021-deterministic-augmentation.md) | Deterministic training-time augmentation | Proposed, 24 Nov 2026 (dev sweep) |
 | [0022](0022-model-capacity.md) | Model capacity (width, visual blocks) chosen on validation | Proposed, 24 Nov 2026 (dev sweep) |
 | [0023](0023-minimum-epochs-before-early-stop.md) | Protocol 3: no early stop before 20 epochs (or rounds), patience 10, budget 150 | Accepted, 24 Nov 2026 |
+| [0024](0024-v2-data-contract.md) | V2 data contract: CREMA-D + RAVDESS, aligned faces, audio and frames inside the speech | Accepted, 25 Nov 2026 |
+| [0025](0025-model-b-mocanu-frozen.md) | Model B: Mocanu et al. (2023) on frozen pretrained encoders | Accepted, 25 Nov 2026 |
+| [0026](0026-protocol-4-selection-score.md) | Protocol 4: select on the mean of valence and emotion macro-F1 per corpus | Accepted, 25 Nov 2026 |

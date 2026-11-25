@@ -13,7 +13,7 @@ Columns follow the metric priority (metrics.PRIORITY, ADR 0014): valence macro-F
 perceived-intensity MAE, then the secondary scores.
 
 Which runs count: per (config, split), the latest finished run trained on the CPU or CUDA (mffer.device)
-that selected its epoch with the current monitor (metrics.MONITOR; a trained run whose config.yaml names
+that selected its epoch with the current monitor (metrics.SCORE; a trained run whose config.yaml names
 another monitor is "invalid (old monitor)") under the current protocol (train.PROTOCOL; a trained run of an
 older one is "invalid (old protocol)", ADR 0017). Dev runs (val.json, no test) are "dev (val only)" and never
 count. Earlier finished runs are "superseded"; Metal GPU runs are
@@ -32,7 +32,7 @@ import pandas as pd
 import yaml
 
 from mffer.config import load_paths
-from mffer.metrics import MONITOR, PRIORITY
+from mffer.metrics import PRIORITY, SCORE
 from mffer.train import PROTOCOL
 
 RUN_DIR = re.compile(r"^(?P<config>.+)-s(?P<split>\d)-(?P<stamp>\d{8}-\d{4})$")
@@ -91,7 +91,7 @@ def load_runs(runs_dir: Path) -> pd.DataFrame:
                   "split": int(match["split"]), "git": meta.get("git"), "device": meta.get("device", "metal" if meta.get("gpu") else "cpu"),
                   "parameters": meta.get("parameters"), "update_bytes": meta.get("update_bytes"),
                   "train_minutes": meta.get("train_minutes"), "finished": result is not None,
-                  "old_monitor": config.get("monitor", MONITOR) != MONITOR,   # B0 trains nothing: no monitor
+                  "old_monitor": config.get("monitor", SCORE) != SCORE,   # B0 trains nothing: no monitor
                   "old_protocol": isinstance(config.get("model"), dict) and config.get("protocol", 1) < PROTOCOL,
                   "dev": dev}
         if result:
@@ -250,7 +250,7 @@ def curves_figure(runs: pd.DataFrame, runs_dir: Path, out: Path) -> None:
         for i, eid in enumerate(ids):
             counted = runs[(runs.status == "counted") & runs.config.isin(EXPERIMENTS[eid][1])] if len(runs) else runs
             for j, run in enumerate(counted.run):
-                curve = pd.read_csv(runs_dir / run / "epochs.csv")[MONITOR]
+                curve = pd.read_csv(runs_dir / run / "epochs.csv")[SCORE]
                 ax.plot(range(1, len(curve) + 1), 100 * curve, styles[i], color=greys[i], linewidth=0.8,
                         label=eid if j == 0 else None)
         ax.set_title(title)

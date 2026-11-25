@@ -22,25 +22,45 @@ import tensorflow as tf
 
 from mffer.config import load_paths
 from mffer.data.cremad import EMOTIONS, VALENCES
-from mffer.models import AUDIO_SHAPES, DEMO_DIM, HEADS, TEXT_DIM, VIDEO_SHAPE, ModelSpec, derive_seed
+from mffer.models import (
+    AUDIO_SHAPES,
+    DEMO_DIM,
+    HEADS,
+    MOCANU_AUDIO,
+    MOCANU_VIDEO,
+    TEXT_DIM,
+    VIDEO_SHAPE,
+    ModelSpec,
+    derive_seed,
+)
 
 SENTENCES = ["DFA", "IEO", "IOM", "ITH", "ITS", "IWL", "IWW", "MTI", "TAI", "TIE", "TSI", "WSI"]
 assert len(SENTENCES) == TEXT_DIM
 
 
 AUDIO_FILES = {"mfcc": "cremad.h5", "logmel": "logmel.h5"}
+# V2 (ADR 0024): CREMA-D + RAVDESS in <processed>/v2; MFCC + aligned faces in features.h5, model B's frozen
+# pretrained features in mocanu.h5 (scripts/extract_mocanu.py).
+DATASETS = {"cremad": ("", {"mfcc": "cremad.h5", "logmel": "logmel.h5"}),
+            "v2": ("v2", {"mfcc": "features.h5"})}
+MOCANU_FILE = "mocanu.h5"
 
 
 class Cremad:
-    """clips.csv and cremad.h5 (+ logmel.h5 when a model uses it), opened once per process. Row i of one is
-    row i of the others."""
+    """clips.csv and the feature files of one dataset ("cremad": V1, CREMA-D only; "v2": CREMA-D + RAVDESS),
+    opened once per process. Row i of one is row i of the others."""
 
-    def __init__(self, processed: Path | None = None):
-        self.processed = processed or load_paths().processed
+    def __init__(self, processed: Path | None = None, dataset: str = "cremad"):
+        folder, self.files = DATASETS[dataset]
+        self.dataset = dataset
+        self.processed = processed or (load_paths().processed / folder)
         self.clips = pd.read_csv(self.processed / "clips.csv")
-        self.h5 = self._open("cremad.h5")
+        if "corpus" not in self.clips:
+            self.clips["corpus"] = "cremad"
+        self.h5 = self._open(self.files["mfcc"])
         self.targets, self.weights = encode_labels(self.clips)
         self._audio = {"mfcc": (self.h5["audio"][:], self.h5["audio_frames"][:])}   # 3.9 MB, kept in memory
+        self._mocanu = None
 
     def _open(self, name: str) -> h5py.File:
         h5 = h5py.File(self.processed / name, "r")
@@ -51,9 +71,14 @@ class Cremad:
     def audio(self, features: str) -> tuple[np.ndarray, np.ndarray]:
         """(features, valid frame counts) for every clip; log-mel (0.8 GB) is loaded on first use."""
         if features not in self._audio:
-            h5 = self._open(AUDIO_FILES[features])
+            h5 = self._open(self.files[features])
             self._audio[features] = (h5["audio"][:], h5["audio_frames"][:])
         return self._audio[features]
+
+    def mocanu(self) -> h5py.File:
+        if self._mocanu is None:
+            self._mocanu = self._open(MOCANU_FILE)
+        return self._mocanu
 
     def read(self, rows: np.ndarray, video: bool = True, features: str = "mfcc") -> dict[str, np.ndarray]:
         """Audio (+ video) for `rows`, in the given order. Video is read one clip (= one chunk) at a time:
@@ -63,6 +88,12 @@ class Cremad:
         if video:
             out["video"] = np.stack([self.h5["video"][i] for i in rows])
         return out
+
+    def read_mocanu(self, rows: np.ndarray) -> dict[str, np.ndarray]:
+        """Model B's frozen features (float16 on disk -> float32): video (6, 49, 2048), audio (6, 512)."""
+        h5 = self.mocanu()
+        return {"mocanu_video": np.stack([h5["video"][i] for i in rows]).astype(np.float32),
+                "mocanu_audio": np.stack([h5["audio"][i] for i in rows]).astype(np.float32)}
 
 
 def encode_labels(clips: pd.DataFrame) -> tuple[dict, dict]:
@@ -84,6 +115,7 @@ def encode_labels(clips: pd.DataFrame) -> tuple[dict, dict]:
                "displayed_valence": one_hot("displayed_valence", VALENCES),
                "displayed_intensity": scalar("displayed_intensity"),
                "perceived_intensity": scalar("perceived_intensity")}
+    encoded["emotion_embedding"] = encoded["displayed_emotion"]   # model B's metric loss: same labels (ADR 0025)
     return {k: v[0] for k, v in encoded.items()}, {k: v[1] for k, v in encoded.items()}
 
 
@@ -131,6 +163,8 @@ def fit_stats(data: Cremad, rows: np.ndarray, features: str = "mfcc") -> AudioSt
 
 
 def _inputs(data: Cremad, rows: np.ndarray, spec: ModelSpec, stats: AudioStats) -> dict[str, np.ndarray]:
+    if spec.arch == "mocanu":
+        return data.read_mocanu(rows)
     raw = data.read(rows, video=spec.video, features=spec.audio_features)
     x = {}
     if spec.audio:
@@ -210,9 +244,12 @@ def make_dataset(data: Cremad, rows: np.ndarray, spec: ModelSpec, stats: AudioSt
             yield x, {h: data.targets[h][batch] for h in spec.heads}, w
 
     x_sig = {}
-    if spec.audio:
+    if spec.arch == "mocanu":
+        x_sig = {"mocanu_video": tf.TensorSpec((None, *MOCANU_VIDEO), tf.float32),
+                 "mocanu_audio": tf.TensorSpec((None, *MOCANU_AUDIO), tf.float32)}
+    elif spec.audio:
         x_sig["audio"] = tf.TensorSpec((None, *spec.audio_shape), tf.float32)
-    if spec.video:
+    if spec.video and spec.arch != "mocanu":
         x_sig["video"] = tf.TensorSpec((None, *VIDEO_SHAPE), tf.uint8)
     if spec.text:
         x_sig["text"] = tf.TensorSpec((None, TEXT_DIM), tf.float32)
@@ -227,6 +264,6 @@ def make_dataset(data: Cremad, rows: np.ndarray, spec: ModelSpec, stats: AudioSt
     dataset = tf.data.Dataset.from_generator(batches, output_signature=(x_sig, y_sig, w_sig))
     # Declared length: Keras then knows the epoch size and doesn't warn that the input "ran out of data".
     dataset = dataset.apply(tf.data.experimental.assert_cardinality(-(-len(rows) // batch_size)))
-    if spec.video:
+    if spec.video and spec.arch != "mocanu":
         dataset = dataset.map(to_float, num_parallel_calls=tf.data.AUTOTUNE)
     return dataset.prefetch(2)

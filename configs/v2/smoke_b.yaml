@@ -1,0 +1,8 @@
+# Smoke test of model B (replaces the T1.0 replication check): 3 epochs, validation only, test never read.
+name: smoke_b
+dataset: v2
+max_epochs: 3
+min_epochs: 0
+score_test: false
+model:
+  preset: mocanu

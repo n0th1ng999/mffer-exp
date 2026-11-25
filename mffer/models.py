@@ -17,6 +17,13 @@ AUDIO_SHAPES = {                   # frames x coefficients, per audio feature (m
 }
 AUDIO_SHAPE = AUDIO_SHAPES["mfcc"]
 VIDEO_SHAPE = (10, 224, 224, 3)    # frames x height x width x RGB
+MOCANU_VIDEO = (6, 49, 2048)       # model B: 6 snippets x 7x7 positions x conv5 channels (3D ResNet-101, frozen)
+MOCANU_AUDIO = (6, 512)            # model B: 6 one-second spectrogram windows x ResNet-18 conv5, pooled (frozen)
+EMBED_DIM = 256                    # model B: the embedding its emotion-metric loss acts on
+# Emotion polarity groups of model B's loss (Mikels' wheel, paper §3.4), in EMOTIONS order
+# ANG DIS FEA HAP NEU SAD: negative 0, positive 1, neutral 2. With calm and surprised dropped these are exactly
+# the valence classes (mffer.data.cremad.VALENCE).
+POLARITY = (0, 0, 0, 1, 2, 0)
 TEXT_DIM = 12                      # one-hot sentence ID (CREMA-D has 12 scripted sentences)
 DEMO_DIM = 2                       # scaled age, sex
 
@@ -26,11 +33,13 @@ HEADS = {  # name: (units, activation, loss)
     "displayed_valence": (N_VALENCE, "softmax", "categorical_crossentropy"),
     "displayed_intensity": (1, "sigmoid", "mse"),
     "perceived_intensity": (1, "sigmoid", "mse"),
+    "emotion_embedding": (EMBED_DIM, None, "emotion_metric"),   # model B only (ADR 0025)
 }
 
 
 @dataclass(frozen=True)
 class ModelSpec:
+    arch: str = "mffer"             # "mffer" (model A family) or "mocanu" (model B, ADR 0025: frozen features)
     audio: bool = True
     video: bool = True
     visual: str = "simple"          # "simple" (M1) or "deep" (3 x Conv2D + BN, BiLSTM)
@@ -68,6 +77,8 @@ PRESETS = {
     "m3": ModelSpec(visual="deep", gating=True, text=True, demographics=True),
     "audio_only": ModelSpec(video=False),
     "video_only": ModelSpec(audio=False),
+    # Model B (Mocanu et al. 2023): single-task emotion; valence is read off the predicted emotion.
+    "mocanu": ModelSpec(arch="mocanu", loss_weights={"displayed_emotion": 1.0, "emotion_embedding": 1.0}),
 }
 
 
@@ -181,9 +192,109 @@ def fusion_block(x, units: int, dropout: float):
     return layers.Dropout(dropout)(x)
 
 
+# ---------------------------------------------------------------- model B (Mocanu, Tapu & Zaharia 2023)
+
+@keras.saving.register_keras_serializable(package="mffer")
+class CrossModalFusion(layers.Layer):
+    """Paper §3.3, Eq. 7-11: Corr = D_AT W D_VT^T (N x N); W_audio = column-wise softmax of Corr, W_video of
+    Corr^T; D~ = W D; out = [tanh(D_VT + D~_VT), tanh(D_AT + D~_AT)] (N x 2m'). W is Xavier-initialised."""
+
+    def build(self, input_shape):
+        dim = input_shape[0][-1]
+        self.w = self.add_weight(shape=(dim, dim), initializer="glorot_uniform", name="w")
+
+    def call(self, inputs):
+        audio, video = inputs                                              # (batch, N, m')
+        corr = keras.ops.matmul(keras.ops.matmul(audio, self.w), keras.ops.transpose(video, (0, 2, 1)))
+        w_audio = keras.ops.softmax(corr, axis=1)                          # column-wise: over rows, per column
+        w_video = keras.ops.softmax(keras.ops.transpose(corr, (0, 2, 1)), axis=1)
+        audio_out = keras.ops.tanh(audio + keras.ops.matmul(w_audio, audio))
+        video_out = keras.ops.tanh(video + keras.ops.matmul(w_video, video))
+        return keras.ops.concatenate([video_out, audio_out], axis=-1)
+
+
+@keras.saving.register_keras_serializable(package="mffer")
+class L2Normalize(layers.Layer):
+    def call(self, x):
+        return x / keras.ops.maximum(keras.ops.norm(x, axis=-1, keepdims=True), 1e-12)
+
+
+@keras.saving.register_keras_serializable(package="mffer")
+class MeanLastAxis(layers.Layer):
+    def call(self, x):
+        return keras.ops.mean(x, axis=-1)
+
+
+@keras.saving.register_keras_serializable(package="mffer")
+class EmotionMetricLoss(keras.losses.Loss):
+    """Paper §3.4, Eq. 14-16: a triplet loss whose negatives are split by emotion polarity, on squared distances
+    between L2-normalised embeddings, over all valid triplets in the batch. For an anchor whose polarity group
+    has other emotions in the batch ("related", r): [d(a,p) - d(a,r) + alpha]+ and [d(a,r) - d(a,n) + beta]+,
+    n of another group. Otherwise (happy, neutral: no related emotion among the 6) the plain triplet loss
+    [d(a,p) - d(a,n) + alpha]+ with n of any other emotion. Per anchor: the mean over its valid triplets
+    (0 when it has none). y_true: emotion one-hot; y_pred: the embedding."""
+
+    def __init__(self, alpha: float = 0.2, beta: float = 0.2, name="emotion_metric", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.alpha, self.beta = alpha, beta
+
+    def call(self, y_true, y_pred):
+        ops = keras.ops
+        y = ops.cast(y_true, "float32")
+        group = ops.matmul(y, ops.convert_to_tensor(np.eye(3, dtype="float32")[list(POLARITY)]))  # (b, 3) one-hot
+        sq = ops.sum(ops.square(y_pred), axis=-1)
+        d = ops.maximum(sq[:, None] + sq[None, :] - 2 * ops.matmul(y_pred, ops.transpose(y_pred)), 0.0)
+        n = ops.shape(y)[0]
+        not_self = 1.0 - ops.eye(n)
+        same = ops.matmul(y, ops.transpose(y)) * not_self                         # positives p
+        same_group = ops.matmul(group, ops.transpose(group))
+        related = same_group * (1.0 - ops.matmul(y, ops.transpose(y)))            # same polarity, other emotion
+        other_group = 1.0 - same_group                                           # opposite / other polarity
+        other_emotion = 1.0 - ops.matmul(y, ops.transpose(y))
+        has_related = ops.cast(ops.sum(related, axis=1) > 0, "float32")           # per anchor
+
+        def mean_hinge(close, far, mask_close, mask_far, margin):                 # over (a, i, j) triplets
+            terms = ops.relu(close[:, :, None] - far[:, None, :] + margin)
+            mask = mask_close[:, :, None] * mask_far[:, None, :]
+            return ops.sum(terms * mask, axis=(1, 2)) / ops.maximum(ops.sum(mask, axis=(1, 2)), 1.0)
+
+        constrained = (mean_hinge(d, d, same, related, self.alpha)
+                       + mean_hinge(d, d, related, other_group, self.beta))
+        plain = mean_hinge(d, d, same, other_emotion, self.alpha)
+        return has_related * constrained + (1.0 - has_related) * plain
+
+    def get_config(self):
+        return {**super().get_config(), "alpha": self.alpha, "beta": self.beta}
+
+
+def build_mocanu(spec: ModelSpec, heads: int = 8) -> keras.Model:
+    """Model B on frozen pretrained features (paper §3, §4.2; choices the paper leaves open: ADR 0025).
+    Video (6, 49, 2048) -> linear 1024 (m) -> spatial MHSA over the 49 positions of each snippet (VS) ->
+    channel MHSA over the 1024 channels, tokens of 49 values (VC) -> mean over positions -> temporal MHSA over
+    the 6 snippets, projected to 512 (VT). Audio (6, 512) -> temporal MHSA (AT). Cross-modal fusion ->
+    flatten -> FC 256 (the embedding of the metric loss, L2-normalised) -> emotion softmax."""
+    video_in = keras.Input(MOCANU_VIDEO, name="mocanu_video")
+    audio_in = keras.Input(MOCANU_AUDIO, name="mocanu_audio")
+    m, positions = 1024, MOCANU_VIDEO[1]
+    v = layers.Dense(m, name="video_projection")(video_in)                                  # (b, 6, 49, 1024)
+    v = layers.MultiHeadAttention(heads, m // heads, attention_axes=(2,), name="visual_spatial")(v, v)
+    v = layers.Permute((1, 3, 2))(v)                                                        # (b, 6, 1024, 49)
+    v = layers.MultiHeadAttention(heads, -(-positions // heads), attention_axes=(2,), name="visual_channel")(v, v)
+    v = MeanLastAxis(name="spatial_mean")(v)                                                # (b, 6, 1024)
+    v = layers.MultiHeadAttention(heads, m // heads, output_shape=512, name="visual_temporal")(v, v)
+    a = layers.MultiHeadAttention(heads, 512 // heads, output_shape=512, name="audio_temporal")(audio_in, audio_in)
+    fused = layers.Flatten()(CrossModalFusion(name="cross_modal_fusion")([a, v]))           # (b, 6 * 1024)
+    hidden = layers.Dense(EMBED_DIM, activation="relu", name="fc")(layers.Dropout(0.3)(fused))
+    outputs = {"displayed_emotion": layers.Dense(N_EMOTIONS, activation="softmax", name="displayed_emotion")(hidden),
+               "emotion_embedding": L2Normalize(name="emotion_embedding")(hidden)}
+    return keras.Model({"mocanu_video": video_in, "mocanu_audio": audio_in}, outputs, name="mocanu")
+
+
 def build_model(spec: ModelSpec, coverage: dict[str, float] | None = None) -> keras.Model:
     """`coverage`: share of training clips that carry each head's label. Keras averages a masked head's
     loss over the whole batch, so its weight is divided by its coverage to keep the configured weight."""
+    if spec.arch == "mocanu":
+        return compile_model(build_mocanu(spec), spec, coverage)
     assert spec.audio or spec.video, "a model needs audio or video"
     assert (spec.audio and spec.video) or not (spec.text or spec.demographics or spec.gating), \
         "text, demographics and gating are defined for the audio-visual model only"
@@ -233,12 +344,14 @@ def compile_model(model: keras.Model, spec: ModelSpec, coverage: dict[str, float
     """(Re)compile with a fresh Adam. Federated clients call this every round, with their own coverage."""
     model.compile(
         optimizer=keras.optimizers.Adam(1e-4),
-        loss={name: HEADS[name][2] for name in spec.heads},
+        loss={name: EmotionMetricLoss() if HEADS[name][2] == "emotion_metric" else HEADS[name][2]
+              for name in spec.heads},
         loss_weights={h: w / (coverage or {}).get(h, 1.0) for h, w in spec.loss_weights.items()},
         # weighted, so masked clips (sample weight 0) don't count in the logged metrics either. Macro-F1 per
         # classification head: argmax per clip, accumulated over the epoch; equals metrics.macro_f1 (tested).
         weighted_metrics={name: ["accuracy", keras.metrics.F1Score(average="macro", name="macro_f1")]
-                          if HEADS[name][2] != "mse" else ["mae"] for name in spec.heads},
+                          if HEADS[name][2] == "categorical_crossentropy" else ["mae"]
+                          for name in spec.heads if HEADS[name][2] != "emotion_metric"},
     )
     return model
 

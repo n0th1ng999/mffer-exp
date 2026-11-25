@@ -1,0 +1,7 @@
+# T1.2, model B: Mocanu, Tapu & Zaharia (2023) attention + cross-modal fusion + emotion-metric loss on frozen
+# pretrained encoders (ADR 0025; features from scripts/extract_mocanu.py), single task (emotion).
+# V2 data (ADR 0024). Protocol 4 (ADR 0026) from mffer.train.DEFAULTS, identical to model A.
+name: t1_b
+dataset: v2
+model:
+  preset: mocanu
