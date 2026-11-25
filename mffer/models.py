@@ -356,6 +356,18 @@ def compile_model(model: keras.Model, spec: ModelSpec, coverage: dict[str, float
     return model
 
 
+def reset_optimizer(model: keras.Model) -> None:
+    """Make the compiled optimizer a fresh one (step 0, Adam moments 0; the learning rate is kept) without
+    recompiling: recompiling every federated round leaks the traced (and XLA-compiled) train functions,
+    ~70 MB per round, which clear_session does not free (measured 25 Nov 2026, ADR 0007 amended)."""
+    optimizer = model.optimizer
+    if not optimizer.built:
+        return                                            # nothing trained yet: already fresh
+    for variable in optimizer.variables:
+        if variable is not optimizer._learning_rate:
+            variable.assign(keras.ops.zeros(variable.shape, variable.dtype))
+
+
 def derive_seed(*parts: int) -> int:
     """A 32-bit seed from integers (e.g. run seed, epoch): the one rule for every derived seed (ADR 0016)."""
     return int(np.random.SeedSequence([int(p) for p in parts]).generate_state(1)[0])

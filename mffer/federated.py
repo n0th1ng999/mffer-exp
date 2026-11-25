@@ -26,6 +26,7 @@ Run directory: the files of `mffer.train` (epochs.csv has one row per round, `ep
 `audio_stats_c<k>.json` per client.
 """
 import argparse
+import gc
 import json
 import os
 import time
@@ -41,7 +42,7 @@ from mffer import device
 from mffer.config import load_run_config
 from mffer.data.pipeline import AudioStats, Cremad, fit_stats, label_coverage, make_dataset, valence_class_weights
 from mffer.data.splits import client_rows, rows
-from mffer.models import build_model, compile_model, derive_seed, reseed, spec_from_config
+from mffer.models import build_model, compile_model, derive_seed, reseed, reset_optimizer, spec_from_config
 from mffer.train import (
     DEFAULTS,
     load_history,
@@ -77,30 +78,51 @@ class ProxModel(keras.Model):
 
 
 def _client_state(run_dir: Path) -> dict:
+    """Per worker: the dataset, the run's config, and one compiled model per client, built on first use and
+    reused every round (only its weights and optimiser state are reset). Recompiling one shared model every
+    round leaked the traced/XLA train functions (~0.07-0.2 GB per round, OOM near round 116 in V1 F2 split 2;
+    keras.backend.clear_session does not free them). One model per client because the loss weights depend on
+    the client's own label coverage (ADR 0006)."""
     if _cache.get("run_dir") != run_dir:
         config = yaml.safe_load((run_dir / "config.yaml").read_text())
         dataset = config.get("dataset", "cremad")
         if _cache.get("dataset") != dataset:
             _cache.update(data=Cremad(dataset=dataset), dataset=dataset)
-        spec = spec_from_config(config["model"])
-        model = build_model(spec)
-        if config["federated"].get("mu"):
-            model = ProxModel(model.input, model.output)
-        _cache.update(run_dir=run_dir, config=config, spec=spec, model=model,
+        _cache.pop("models", None)
+        keras.backend.clear_session()
+        gc.collect()
+        _cache.update(run_dir=run_dir, config=config, spec=spec_from_config(config["model"]), models={},
                       meta=json.loads((run_dir / "meta.json").read_text()))
     return _cache
 
 
+def client_model(state: dict, client: int, own: np.ndarray) -> keras.Model:
+    """The client's compiled model with a fresh optimiser (ADR 0007). FedProx (ProxModel) is recompiled every
+    round instead: its proximal anchor is captured when the train function is traced."""
+    spec, fed = state["spec"], state["config"]["federated"]
+    coverage = label_coverage(state["data"], own, spec)
+    if fed.get("mu"):
+        if client not in state["models"]:
+            base = build_model(spec)
+            state["models"][client] = ProxModel(base.input, base.output)
+        return compile_model(state["models"][client], spec, coverage)
+    if client not in state["models"]:
+        state["models"][client] = build_model(spec, coverage=coverage)
+    model = state["models"][client]
+    reset_optimizer(model)
+    return model
+
+
 def client_fit(run_dir: Path, client: int, parameters: list[np.ndarray], round_: int) -> tuple:
     state = _client_state(run_dir)
-    data, config, spec, model, meta = (state[k] for k in ("data", "config", "spec", "model", "meta"))
+    data, config, spec, meta = (state[k] for k in ("data", "config", "spec", "meta"))
     fed = config["federated"]
     own = client_rows(data.clips, meta["split"], fed["clients"], fed["partition"], state["dataset"])[client]
     stats = AudioStats.load(run_dir / f"audio_stats_c{client}.json")
 
     start = time.perf_counter()
+    model = client_model(state, client, own)
     model.set_weights(parameters)
-    compile_model(model, spec, label_coverage(data, own, spec))   # fresh Adam every round
     if isinstance(model, ProxModel):   # anchor = this round's global weights, trainable ones only
         model.set_anchor(fed["mu"], [w.numpy() for w in model.trainable_weights])
     seed = derive_seed(meta["seed"], client, round_)

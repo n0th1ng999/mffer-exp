@@ -56,3 +56,29 @@ def test_evaluation_loss_has_no_proximal_term():
     with_prox = model.evaluate(x, y, verbose=0, return_dict=True)["loss"]
     model.set_anchor(0.0, [w.numpy() for w in model.trainable_weights])
     assert model.evaluate(x, y, verbose=0, return_dict=True)["loss"] == pytest.approx(with_prox)
+
+
+def test_reset_optimizer_trains_exactly_like_a_freshly_compiled_model():
+    """Federated clients reuse one compiled model and reset Adam each round instead of recompiling (which
+    leaks memory): two rounds must give bit-identical weights either way."""
+    from mffer.models import reset_optimizer
+    x, y = batch()
+    start = build_model(SPEC).get_weights()
+
+    def rounds(reuse: bool):
+        keras.utils.set_random_seed(0)
+        model = build_model(SPEC)
+        weights = start
+        for _ in range(2):
+            model.set_weights(weights)
+            if reuse:
+                reset_optimizer(model)
+            else:
+                compile_model(model, SPEC)
+            keras.utils.set_random_seed(1)
+            model.fit(x, y, batch_size=8, epochs=1, verbose=0, shuffle=False)
+            weights = model.get_weights()
+        return weights
+
+    for a, b in zip(rounds(reuse=True), rounds(reuse=False), strict=True):
+        np.testing.assert_array_equal(a, b)

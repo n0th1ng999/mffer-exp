@@ -26,3 +26,13 @@ on the clients.
 - Losing Adam's moments between rounds is part of the measured cost of federation. The paper states it.
 - Rounds are slightly slower than centralised epochs (about 55 s vs 48 s for M1).
 - Server-side val is a simulation convenience. A real deployment would need val data held somewhere.
+
+## Amendment (25 Nov 2026)
+
+"Fresh Adam every round" is now implemented without recompiling: each client's model is compiled once per
+worker and `mffer.models.reset_optimizer` sets Adam's step and moments to zero each round (learning rate
+kept). Recompiling every round leaked the traced/XLA train functions in the Ray worker (~70 MB per round for
+the audio model, ~0.2 GB for M3; V1 F2 split 2 was OOM-killed at round 116); `keras.backend.clear_session`
+does not free them. Measured on 15 rounds: worker memory flat at ~1.9 GB (was +62 MB per round), identical
+validation metrics; `tests/test_federated.py` checks that reset and recompile give bit-identical weights.
+FedProx clients still recompile (their anchor is captured at tracing).
